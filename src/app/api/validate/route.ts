@@ -1,9 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
+import { getSession } from "@/lib/auth";
 
 const MAX_LEADS = 10;
 
 export async function POST(req: NextRequest) {
+  const user = await getSession();
+  if (!user) {
+    return NextResponse.json({ error: "Not authenticated." }, { status: 401 });
+  }
+
   let body: Record<string, unknown>;
   try {
     body = await req.json();

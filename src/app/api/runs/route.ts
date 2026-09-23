@@ -1,10 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
+import { getSession, requireRole } from "@/lib/auth";
 
 const CANDIDATE_POOL_MULTIPLIER = 2;
 
 // POST /api/runs — create run and start agent (validation already done by /api/validate)
 export async function POST(req: NextRequest) {
+  const user = await getSession();
+  if (!user) {
+    return NextResponse.json({ error: "Not authenticated." }, { status: 401 });
+  }
+  if (!requireRole(user, ["researcher", "admin"])) {
+    return NextResponse.json({ error: "Only researchers can start runs." }, { status: 403 });
+  }
+
   let body: Record<string, unknown>;
   try {
     body = await req.json();
@@ -37,6 +46,7 @@ export async function POST(req: NextRequest) {
   const { data: run, error: insertError } = await supabase
     .from("lead_runs")
     .insert({
+      user_id: user.id,
       objective: objective.trim(),
       lead_limit: leadTarget,
       candidate_limit: candidateLimit,

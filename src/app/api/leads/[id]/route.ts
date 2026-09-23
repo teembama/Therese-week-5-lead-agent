@@ -1,11 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
+import { getSession, requireRole } from "@/lib/auth";
 
 // PATCH /api/leads/[id] — human reviewer promotes a needs_review lead to qualified
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const user = await getSession();
+  if (!user) {
+    return NextResponse.json({ error: "Not authenticated." }, { status: 401 });
+  }
+  if (!requireRole(user, ["reviewer", "admin"])) {
+    return NextResponse.json({ error: "Only reviewers can approve leads." }, { status: 403 });
+  }
+
   const { id } = await params;
 
   let body: Record<string, unknown>;
