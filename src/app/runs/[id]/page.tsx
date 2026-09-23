@@ -412,6 +412,16 @@ export default function RunPage() {
   const [cancelling, setCancelling] = useState(false);
   const [activeTab, setActiveTab] = useState<"leads" | "tools">("leads");
   const [promotingLead, setPromotingLead] = useState<Lead | null>(null);
+  const [role, setRole] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("/api/auth/session")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((session) => setRole(session?.user?.role ?? null))
+      .catch(console.error);
+  }, []);
+
+  const isReviewer = role === "reviewer" || role === "admin";
 
   const fetchData = useCallback(() => {
     if (!params.id) return;
@@ -490,7 +500,7 @@ export default function RunPage() {
           >
             {run.status}
           </span>
-          {run.status === "running" && (
+          {run.status === "running" && role && (
             <button
               onClick={handleCancel}
               disabled={cancelling}
@@ -584,7 +594,7 @@ export default function RunPage() {
                   </div>
                 </button>
 
-                {lead.qualification_status === "needs_review" && (
+                {lead.qualification_status === "needs_review" && isReviewer && (
                   <div className="px-4 pb-3 -mt-1 flex justify-end">
                     <button
                       onClick={() => setPromotingLead(lead)}
