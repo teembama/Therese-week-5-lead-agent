@@ -91,7 +91,7 @@ function getStepStatus(
     refine: hasIcp,
     discover: hasDiscovery,
     research: hasScrape && hasLeads,
-    outreach: hasOutreach && runStatus !== "running",
+    outreach: runStatus === "completed" ? true : hasOutreach && runStatus !== "running",
   };
 
   // Figure out current status message
