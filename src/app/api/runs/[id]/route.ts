@@ -18,6 +18,24 @@ export async function GET(
     return NextResponse.json({ error: "Run not found" }, { status: 404 });
   }
 
+  // Stale run detection: if running for more than 35 minutes, mark as failed
+  if (run.status === "running") {
+    const runAge = Date.now() - new Date(run.updated_at || run.created_at).getTime();
+    if (runAge > 35 * 60 * 1000) {
+      await supabase
+        .from("lead_runs")
+        .update({
+          status: "failed",
+          error: "The research took too long and was stopped. Please try again with fewer leads or broader criteria.",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", id)
+        .eq("status", "running");
+      run.status = "failed";
+      run.error = "The research took too long and was stopped. Please try again with fewer leads or broader criteria.";
+    }
+  }
+
   // Fetch leads with sources and outreach
   const { data: leads } = await supabase
     .from("leads")
@@ -71,10 +89,21 @@ export async function PATCH(
       updated_at: new Date().toISOString(),
     })
     .eq("id", id)
-    .eq("status", "running"); // Only cancel if still running
+    .eq("status", "running");
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  // Best-effort: stop the Sandbox if on Vercel
+  if (process.env.VERCEL) {
+    try {
+      const { Sandbox } = await import("@vercel/sandbox");
+      const sandbox = await Sandbox.get({ name: `run-${id.slice(0, 8)}` });
+      if (sandbox) await sandbox.stop();
+    } catch {
+      // Sandbox may already be stopped
+    }
   }
 
   return NextResponse.json({ status: "cancelled" });
