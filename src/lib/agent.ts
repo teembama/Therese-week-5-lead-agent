@@ -6,6 +6,15 @@ import {
 import { z } from "zod";
 import { supabase } from "./supabase";
 
+async function isRunCancelled(runId: string): Promise<boolean> {
+  const { data } = await supabase
+    .from("lead_runs")
+    .select("status")
+    .eq("id", runId)
+    .single();
+  return data?.status !== "running";
+}
+
 // --- Tool: log_tool_call ---
 const logToolCall = tool(
   "log_tool_call",
@@ -57,6 +66,14 @@ const updateRun = tool(
     actual_cost: z.number().optional(),
   },
   async (args) => {
+    // A cancelled run must not be revived (e.g. by passing status: "running")
+    if (await isRunCancelled(args.run_id)) {
+      return {
+        content: [{ type: "text" as const, text: "Run was cancelled. Stopping." }],
+        isError: true,
+      };
+    }
+
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
     if (args.refined_icp) updates.refined_icp = args.refined_icp;
     if (args.status) updates.status = args.status;
@@ -93,6 +110,14 @@ const discoverCompanies = tool(
   },
   async (args) => {
     const startTime = Date.now();
+
+    if (await isRunCancelled(args.run_id)) {
+      return {
+        content: [{ type: "text" as const, text: "Run was cancelled. Stopping." }],
+        isError: true,
+      };
+    }
+
     const apiToken = process.env.APIFY_API_TOKEN;
 
     console.log("APIFY DEBUG:", {
@@ -187,6 +212,14 @@ const scrapeCompany = tool(
   },
   async (args) => {
     const startTime = Date.now();
+
+    if (await isRunCancelled(args.run_id)) {
+      return {
+        content: [{ type: "text" as const, text: "Run was cancelled. Stopping." }],
+        isError: true,
+      };
+    }
+
     const apiKey = process.env.FIRECRAWL_API_KEY;
 
     console.log("FIRECRAWL DEBUG:", {
@@ -312,6 +345,13 @@ const saveLead = tool(
       .optional(),
   },
   async (args) => {
+    if (await isRunCancelled(args.run_id)) {
+      return {
+        content: [{ type: "text" as const, text: "Run was cancelled. Stopping." }],
+        isError: true,
+      };
+    }
+
     // Validate required fields
     if (!args.company_name.trim()) {
       return {
@@ -728,11 +768,17 @@ Begin by refining the ICP using the icp-refinement skill, then discover and qual
         await supabase
           .from("lead_runs")
           .update({
-            status: results.status,
             actual_cost: results.cost,
             updated_at: new Date().toISOString(),
           })
           .eq("id", config.runId);
+
+        // Only set final status if nothing else (agent or user cancel) already has
+        await supabase
+          .from("lead_runs")
+          .update({ status: results.status })
+          .eq("id", config.runId)
+          .eq("status", "running");
         }
     }
   } catch (error) {
@@ -747,7 +793,8 @@ Begin by refining the ICP using the icp-refinement skill, then discover and qual
         error: errorMsg,
         updated_at: new Date().toISOString(),
       })
-      .eq("id", config.runId);
+      .eq("id", config.runId)
+      .eq("status", "running");
   }
 
   return results;
