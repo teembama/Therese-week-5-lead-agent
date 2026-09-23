@@ -203,6 +203,92 @@ function ProgressTracker({
   );
 }
 
+// --- Research Criteria ---
+// The agent's ICP keys vary between runs, so several aliases map to one label.
+const ICP_FIELDS: { label: string; keys: string[] }[] = [
+  { label: "Company Type", keys: ["company_type", "target_company_type"] },
+  { label: "Industries", keys: ["industries", "industry"] },
+  { label: "Geography", keys: ["geography", "location", "locations"] },
+  { label: "Company Size", keys: ["company_size", "headcount_range", "employee_range", "size"] },
+  { label: "Buyer Persona", keys: ["buyer_persona", "persona"] },
+  { label: "Business Problem", keys: ["business_problem", "problem"] },
+  { label: "Hard Filters", keys: ["hard_filters"] },
+  { label: "Soft Preferences", keys: ["soft_preferences"] },
+  { label: "Disqualifiers", keys: ["disqualifiers"] },
+];
+
+function formatIcpValue(value: unknown): string {
+  if (value == null) return "";
+  if (Array.isArray(value)) return value.map(formatIcpValue).filter(Boolean).join(", ");
+  if (typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([k, v]) => `${humanizeKey(k)}: ${formatIcpValue(v)}`)
+      .join("; ");
+  }
+  return String(value);
+}
+
+function humanizeKey(key: string): string {
+  return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function ResearchCriteria({
+  objective,
+  icp,
+}: {
+  objective: string;
+  icp: Record<string, unknown> | null;
+}) {
+  const [open, setOpen] = useState(false);
+
+  const knownKeys = new Set(ICP_FIELDS.flatMap((f) => f.keys));
+  const rows: { label: string; value: string }[] = [];
+  if (icp) {
+    for (const field of ICP_FIELDS) {
+      const key = field.keys.find((k) => icp[k] != null);
+      const value = key ? formatIcpValue(icp[key]) : "";
+      if (value) rows.push({ label: field.label, value });
+    }
+    for (const [key, raw] of Object.entries(icp)) {
+      if (knownKeys.has(key)) continue;
+      const value = formatIcpValue(raw);
+      if (value) rows.push({ label: humanizeKey(key), value });
+    }
+  }
+
+  return (
+    <div className="mb-6 border rounded-lg">
+      <button
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        className="w-full flex items-center gap-2 p-3 text-sm font-medium text-left hover:bg-gray-50 dark:hover:bg-gray-900"
+      >
+        <span className={`inline-block transition-transform ${open ? "rotate-90" : ""}`}>▶</span>
+        Research Criteria
+      </button>
+      {open && (
+        <div className="border-t p-4 text-sm space-y-3">
+          <div>
+            <p className="text-xs font-medium text-gray-500">Your Objective</p>
+            <p className="text-gray-700 dark:text-gray-300">{objective}</p>
+          </div>
+          {rows.map((row) => (
+            <div key={row.label}>
+              <p className="text-xs font-medium text-gray-500">{row.label}</p>
+              <p className="text-gray-700 dark:text-gray-300">{row.value}</p>
+            </div>
+          ))}
+          {!icp && (
+            <p className="text-xs text-gray-500 italic">
+              Refined criteria will appear once the agent has analyzed your objective.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PromoteLeadModal({
   lead,
   onClose,
@@ -424,6 +510,7 @@ export default function RunPage() {
         hasIcp={!!run.refined_icp}
       />
 
+      <ResearchCriteria objective={run.objective} icp={run.refined_icp} />
       <div className="flex gap-4 border-b mb-4">
         <button
           onClick={() => setActiveTab("leads")}
