@@ -320,7 +320,9 @@ const saveLead = tool(
       };
     }
 
-    // Insert lead
+    const isNeedsReview = args.qualification_status === "needs_review";
+
+    // Insert lead — needs_review leads get basic info only until a human promotes them
     const { data: lead, error: leadError } = await supabase
       .from("leads")
       .insert({
@@ -329,10 +331,10 @@ const saveLead = tool(
         company_domain: args.company_domain || null,
         qualification_status: args.qualification_status,
         confidence: args.confidence,
-        fit_reasons: args.fit_reasons,
+        fit_reasons: isNeedsReview ? [] : args.fit_reasons,
         concerns: args.concerns,
         source_urls: args.source_urls,
-        source_summary: args.source_summary,
+        source_summary: isNeedsReview ? "" : args.source_summary,
       })
       .select("id")
       .single();
@@ -341,6 +343,17 @@ const saveLead = tool(
       return {
         content: [{ type: "text" as const, text: `Failed to save lead: ${leadError?.message}` }],
         isError: true,
+      };
+    }
+
+    if (isNeedsReview) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Lead saved for human review: ${args.company_name} (needs_review, confidence: ${args.confidence}). ID: ${lead.id}. Sources and outreach are not stored for needs_review leads.`,
+          },
+        ],
       };
     }
 
