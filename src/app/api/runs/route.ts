@@ -22,6 +22,19 @@ export async function POST(req: NextRequest) {
 
   const candidateLimit = leadTarget * CANDIDATE_POOL_MULTIPLIER;
 
+  // Idempotency: return an identical run started in the last 30s instead of duplicating it
+  const { data: recent } = await supabase
+    .from("lead_runs")
+    .select("id")
+    .eq("objective", objective.trim())
+    .eq("status", "running")
+    .gte("created_at", new Date(Date.now() - 30000).toISOString())
+    .limit(1);
+
+  if (recent && recent.length > 0) {
+    return NextResponse.json({ run_id: recent[0].id, status: "running" });
+  }
+
   const { data: run, error: insertError } = await supabase
     .from("lead_runs")
     .insert({
