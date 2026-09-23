@@ -24,6 +24,7 @@ interface OutreachDraft {
   email_3_body: string;
   email_3_personalization: string;
   linkedin_message: string;
+  status: string;
 }
 
 interface Lead {
@@ -210,6 +211,7 @@ const TOOL_LABELS: Record<string, string> = {
   update_run: "Update Run",
   log_tool_call: "Log",
   manual_review: "Human Review",
+  manual_approval: "Human Approval",
 };
 
 // --- Research Criteria ---
@@ -405,6 +407,71 @@ function PromoteLeadModal({
   );
 }
 
+function ConfirmModal({
+  title,
+  message,
+  confirmLabel,
+  cancelLabel,
+  tone = "neutral",
+  busy = false,
+  error,
+  onConfirm,
+  onClose,
+}: {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  cancelLabel?: string;
+  tone?: "red" | "green" | "neutral";
+  busy?: boolean;
+  error?: string | null;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  const toneClass =
+    tone === "red"
+      ? "bg-red-600 hover:bg-red-700"
+      : tone === "green"
+      ? "bg-green-600 hover:bg-green-700"
+      : "bg-blue-600 hover:bg-blue-700";
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
+      onClick={busy ? undefined : onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="w-full max-w-md rounded-lg bg-white dark:bg-gray-900 border p-5 text-sm"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-base font-semibold mb-2">{title}</h2>
+        <p className="text-gray-600 dark:text-gray-400">{message}</p>
+        {error && <p className="text-xs text-red-500 mt-3">{error}</p>}
+        <div className="flex justify-end gap-2 mt-5">
+          {cancelLabel && (
+            <button
+              onClick={onClose}
+              disabled={busy}
+              className="text-xs px-3 py-1.5 border rounded hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
+            >
+              {cancelLabel}
+            </button>
+          )}
+          <button
+            onClick={onConfirm}
+            disabled={busy}
+            className={`text-xs px-3 py-1.5 rounded text-white disabled:opacity-50 ${toneClass}`}
+          >
+            {busy ? "Working..." : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function RunPage() {
   const params = useParams();
   const [data, setData] = useState<RunData | null>(null);
@@ -413,6 +480,11 @@ export default function RunPage() {
   const [activeTab, setActiveTab] = useState<"leads" | "tools">("leads");
   const [promotingLead, setPromotingLead] = useState<Lead | null>(null);
   const [role, setRole] = useState<string | null>(null);
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
+  const [promotedNotice, setPromotedNotice] = useState(false);
+  const [approving, setApproving] = useState<{ lead: Lead; draft: OutreachDraft } | null>(null);
+  const [approveBusy, setApproveBusy] = useState(false);
+  const [approveError, setApproveError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/auth/session")
@@ -459,6 +531,27 @@ export default function RunPage() {
       console.error("Failed to cancel");
     } finally {
       setCancelling(false);
+      setConfirmingCancel(false);
+    }
+  };
+
+  const handleApprove = async () => {
+    if (!approving || approveBusy) return;
+    setApproveBusy(true);
+    setApproveError(null);
+    try {
+      const res = await fetch(`/api/outreach/${approving.draft.id}`, { method: "PATCH" });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setApproveError(json.error || "Failed to approve outreach. Please try again.");
+        return;
+      }
+      setApproving(null);
+      fetchData();
+    } catch {
+      setApproveError("Failed to approve outreach. Please try again.");
+    } finally {
+      setApproveBusy(false);
     }
   };
 
@@ -502,7 +595,7 @@ export default function RunPage() {
           </span>
           {run.status === "running" && role && (
             <button
-              onClick={handleCancel}
+              onClick={() => setConfirmingCancel(true)}
               disabled={cancelling}
               className="ml-auto text-xs px-3 py-1 border border-red-300 text-red-600 rounded hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/20 disabled:opacity-50"
             >
@@ -646,7 +739,31 @@ export default function RunPage() {
                     )}
                     {lead.outreach_drafts?.[0] && (
                       <div>
-                        <p className="font-medium mb-2">Outreach Drafts</p>
+                        <div className="flex items-center gap-2 mb-2">
+                          <p className="font-medium">Outreach Drafts</p>
+                          <span
+                            className={`text-xs px-2 py-0.5 rounded-full ${
+                              lead.outreach_drafts[0].status === "approved"
+                                ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
+                                : "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+                            }`}
+                          >
+                            {lead.outreach_drafts[0].status || "draft"}
+                          </span>
+                          {isReviewer &&
+                            lead.qualification_status === "qualified" &&
+                            lead.outreach_drafts[0].status === "draft" && (
+                              <button
+                                onClick={() => {
+                                  setApproveError(null);
+                                  setApproving({ lead, draft: lead.outreach_drafts[0] });
+                                }}
+                                className="ml-auto text-xs px-3 py-1 border border-green-300 text-green-700 rounded hover:bg-green-50 dark:border-green-800 dark:text-green-400 dark:hover:bg-green-900/20"
+                              >
+                                Approve
+                              </button>
+                            )}
+                        </div>
                         {[1, 2, 3].map((n) => {
                           const draft = lead.outreach_drafts[0];
                           const subject = draft[
@@ -752,7 +869,45 @@ export default function RunPage() {
           onPromoted={() => {
             setPromotingLead(null);
             fetchData();
+            setPromotedNotice(true);
           }}
+        />
+      )}
+
+      {confirmingCancel && (
+        <ConfirmModal
+          title="Cancel this run?"
+          message="Are you sure you want to cancel this run? Any leads already found will be saved, but the research will stop."
+          cancelLabel="Keep Running"
+          confirmLabel="Cancel Run"
+          tone="red"
+          busy={cancelling}
+          onConfirm={handleCancel}
+          onClose={() => setConfirmingCancel(false)}
+        />
+      )}
+
+      {promotedNotice && (
+        <ConfirmModal
+          title="Lead promoted"
+          message="Lead promoted to qualified. This action has been logged."
+          confirmLabel="OK"
+          onConfirm={() => setPromotedNotice(false)}
+          onClose={() => setPromotedNotice(false)}
+        />
+      )}
+
+      {approving && (
+        <ConfirmModal
+          title="Approve outreach"
+          message={`Approve this outreach for ${approving.lead.company_name}? Approved outreach is ready for external use.`}
+          cancelLabel="Cancel"
+          confirmLabel="Approve Outreach"
+          tone="green"
+          busy={approveBusy}
+          error={approveError}
+          onConfirm={handleApprove}
+          onClose={() => setApproving(null)}
         />
       )}
     </main>
