@@ -748,22 +748,11 @@ Begin by refining the ICP using the icp-refinement skill, then discover and qual
         }
       } else if (msg.type === "result") {
         results.cost = (msg.total_cost_usd as number) ?? 0;
-        
-        // Check if the agent actually produced leads
-        const { data: leadCount } = await supabase
-          .from("leads")
-          .select("id", { count: "exact", head: true })
-          .eq("run_id", config.runId)
-          .eq("qualification_status", "qualified");
-        
-        const qualifiedCount = leadCount?.length ?? 0;
-        
-        if (msg.subtype === "success" && qualifiedCount === 0) {
-          // Agent said success but produced nothing — mark as failed
-          results.status = "failed";
-        } else {
-          results.status = msg.subtype === "success" ? "completed" : "failed";
-        }
+
+        // A zero-result search is still "completed" — the agent's own status and
+        // user-facing message stand. "failed" is reserved for system breakage.
+        results.status = msg.subtype === "success" ? "completed" : "failed";
+
         // Update run with final cost
         await supabase
           .from("lead_runs")
