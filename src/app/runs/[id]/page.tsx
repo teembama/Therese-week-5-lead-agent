@@ -203,6 +203,15 @@ function ProgressTracker({
   );
 }
 
+const TOOL_LABELS: Record<string, string> = {
+  discover_companies: "Apify Search",
+  scrape_company: "Firecrawl Scrape",
+  save_lead: "Save Lead",
+  update_run: "Update Run",
+  log_tool_call: "Log",
+  manual_review: "Human Review",
+};
+
 // --- Research Criteria ---
 // The agent's ICP keys vary between runs, so several aliases map to one label.
 const ICP_FIELDS: { label: string; keys: string[] }[] = [
@@ -701,7 +710,9 @@ export default function RunPage() {
                   }`}
                 />
                 <div className="min-w-0 flex-1">
-                  <span className="font-mono font-medium">{tc.tool_name}</span>
+                  <span className="font-medium" title={tc.tool_name}>
+                    {TOOL_LABELS[tc.tool_name] ?? tc.tool_name}
+                  </span>
                   {tc.purpose && (
                     <span className="text-gray-500 ml-2">{tc.purpose}</span>
                   )}
