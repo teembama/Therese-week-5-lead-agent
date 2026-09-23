@@ -99,6 +99,15 @@ const updateRun = tool(
 );
 
 // --- Tool: discover_companies ---
+const DOMAIN_DENYLIST = [
+  'facebook.com', 'instagram.com', 'twitter.com', 'x.com', 'linkedin.com',
+  'youtube.com', 'tiktok.com', 'reddit.com', 'pinterest.com',
+  'indeed.com', 'glassdoor.com', 'ziprecruiter.com', 'monster.com',
+  'craigslist.org', 'yelp.com', 'bbb.org',
+  'wikipedia.org', 'amazon.com', 'ebay.com',
+  'gov', 'edu'
+];
+
 const discoverCompanies = tool(
   
   "discover_companies",
@@ -171,6 +180,19 @@ const discoverCompanies = tool(
           snippet: r.snippet || "",
         }));
 
+      // Drop obvious non-company domains (social, job boards, directories, gov/edu)
+      // so they don't waste Firecrawl credits
+      const filtered = companies.filter((c) => {
+        try {
+          const domain = new URL(String(c.url)).hostname.toLowerCase();
+          return !DOMAIN_DENYLIST.some(
+            (blocked) => domain === blocked || domain.endsWith("." + blocked)
+          );
+        } catch {
+          return true;
+        }
+      });
+
       const duration = Date.now() - startTime;
 
       return {
@@ -179,10 +201,11 @@ const discoverCompanies = tool(
             type: "text" as const,
             text: JSON.stringify({
               status: "success",
-              count: companies.length,
+              count: filtered.length,
+              filtered_out: companies.length - filtered.length,
               query: args.search_query,
               duration_ms: duration,
-              companies,
+              companies: filtered,
             }),
           },
         ],
