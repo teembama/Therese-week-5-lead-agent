@@ -1,0 +1,517 @@
+"use client";
+
+import { useState, useEffect, useCallback } from "react";
+import { useParams } from "next/navigation";
+import Link from "next/link";
+
+interface LeadSource {
+  id: string;
+  url: string;
+  title: string;
+  summary: string;
+  relevant_evidence: string;
+}
+
+interface OutreachDraft {
+  id: string;
+  email_1_subject: string;
+  email_1_body: string;
+  email_1_personalization: string;
+  email_2_subject: string;
+  email_2_body: string;
+  email_2_personalization: string;
+  email_3_subject: string;
+  email_3_body: string;
+  email_3_personalization: string;
+  linkedin_message: string;
+}
+
+interface Lead {
+  id: string;
+  company_name: string;
+  company_domain: string;
+  qualification_status: string;
+  confidence: number;
+  fit_reasons: string[];
+  concerns: string[];
+  source_urls: string[];
+  source_summary: string;
+  lead_sources: LeadSource[];
+  outreach_drafts: OutreachDraft[];
+}
+
+interface ToolCall {
+  id: string;
+  tool_name: string;
+  purpose: string;
+  input_summary: string;
+  result_summary: string;
+  status: string;
+  error_message: string | null;
+  created_at: string;
+  duration_ms: number | null;
+}
+
+interface RunData {
+  run: {
+    id: string;
+    objective: string;
+    refined_icp: Record<string, unknown> | null;
+    status: string;
+    error: string | null;
+    created_at: string;
+    actual_cost: number | null;
+    lead_limit: number;
+  };
+  leads: Lead[];
+  toolCalls: ToolCall[];
+}
+
+// --- Progress Steps ---
+const STEPS = [
+  { key: "refine", label: "Refine ICP" },
+  { key: "discover", label: "Discover" },
+  { key: "research", label: "Research" },
+  { key: "outreach", label: "Outreach" },
+];
+
+function getStepStatus(
+  toolCalls: ToolCall[],
+  leads: Lead[],
+  runStatus: string,
+  hasIcp: boolean
+) {
+  const toolNames = toolCalls.map((tc) => tc.tool_name);
+  const hasDiscovery = toolNames.includes("discover_companies");
+  const hasScrape = toolNames.includes("scrape_company");
+  const hasLeads = leads.length > 0;
+  const hasOutreach = leads.some((l) => l.outreach_drafts?.length > 0);
+
+  const completed: Record<string, boolean> = {
+    refine: hasIcp,
+    discover: hasDiscovery,
+    research: hasScrape && hasLeads,
+    outreach: hasOutreach && runStatus !== "running",
+  };
+
+  // Figure out current status message
+  let statusMessage = "";
+  if (runStatus === "running") {
+    if (!hasIcp) {
+      statusMessage = "Analyzing your objective and building target criteria...";
+    } else if (!hasDiscovery) {
+      statusMessage = "Searching for matching companies...";
+    } else if (!hasScrape) {
+      statusMessage = "Scraping company websites for evidence...";
+    } else if (!hasLeads) {
+      statusMessage = "Evaluating companies against qualification criteria...";
+    } else if (!hasOutreach) {
+      const qualifiedCount = leads.filter((l) => l.qualification_status === "qualified").length;
+      const outreachCount = leads.filter((l) => l.outreach_drafts?.length > 0).length;
+      statusMessage = `Generating outreach ${outreachCount}/${qualifiedCount}...`;
+    } else {
+      statusMessage = "Running final quality checks...";
+    }
+  } else if (runStatus === "completed") {
+    const qualifiedCount = leads.filter((l) => l.qualification_status === "qualified").length;
+    statusMessage = `Complete — ${qualifiedCount} qualified lead${qualifiedCount !== 1 ? "s" : ""} found.`;
+  } else if (runStatus === "failed") {
+    statusMessage = "Run failed.";
+  }
+
+  return { completed, statusMessage };
+}
+
+function ProgressTracker({
+  toolCalls,
+  leads,
+  runStatus,
+  hasIcp,
+}: {
+  toolCalls: ToolCall[];
+  leads: Lead[];
+  runStatus: string;
+  hasIcp: boolean;
+}) {
+  const { completed, statusMessage } = getStepStatus(toolCalls, leads, runStatus, hasIcp);
+
+  const currentIndex = STEPS.findIndex((s) => !completed[s.key]);
+  const activeIndex = currentIndex === -1 ? STEPS.length : currentIndex;
+
+  return (
+    <div className="mb-8">
+      <div className="flex items-center justify-between py-4">
+        {STEPS.map((step, i) => {
+          const done = completed[step.key];
+          const active = i === activeIndex && runStatus === "running";
+          const failed = runStatus === "failed" && i === activeIndex;
+
+          return (
+            <div key={step.key} className="flex items-center flex-1 last:flex-none">
+              <div className="flex flex-col items-center">
+                <div
+                  className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold border-2 transition-all ${
+                    done
+                      ? "bg-green-500 border-green-500 text-white"
+                      : failed
+                      ? "bg-red-500 border-red-500 text-white"
+                      : active
+                      ? "border-blue-500 text-blue-500 animate-pulse"
+                      : "border-gray-300 text-gray-400 dark:border-gray-600"
+                  }`}
+                >
+                  {done ? "✓" : failed ? "✕" : i + 1}
+                </div>
+                <span
+                  className={`text-xs mt-1.5 ${
+                    done
+                      ? "text-green-600 dark:text-green-400 font-medium"
+                      : active
+                      ? "text-blue-500 font-medium"
+                      : "text-gray-400"
+                  }`}
+                >
+                  {step.label}
+                </span>
+              </div>
+              {i < STEPS.length - 1 && (
+                <div
+                  className={`flex-1 h-0.5 mx-2 mb-5 ${
+                    done ? "bg-green-500" : "bg-gray-200 dark:bg-gray-700"
+                  }`}
+                />
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {statusMessage && (
+        <p
+          className={`text-sm text-center mt-1 ${
+            runStatus === "failed"
+              ? "text-red-500"
+              : runStatus === "completed"
+              ? "text-green-600 dark:text-green-400"
+              : "text-gray-500 animate-pulse"
+          }`}
+        >
+          {statusMessage}
+        </p>
+      )}
+    </div>
+  );
+}
+
+export default function RunPage() {
+  const params = useParams();
+  const [data, setData] = useState<RunData | null>(null);
+  const [expandedLead, setExpandedLead] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+  const [activeTab, setActiveTab] = useState<"leads" | "tools">("leads");
+
+  const fetchData = useCallback(() => {
+    if (!params.id) return;
+    fetch(`/api/runs/${params.id}`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`${r.status}`);
+        return r.json();
+      })
+      .then(setData)
+      .catch(console.error);
+  }, [params.id]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  // Poll while running
+  useEffect(() => {
+    if (!data || data.run.status !== "running") return;
+    const interval = setInterval(fetchData, 3000);
+    return () => clearInterval(interval);
+  }, [data?.run?.status, fetchData]);
+
+  const handleCancel = async () => {
+    if (!params.id || cancelling) return;
+    setCancelling(true);
+    try {
+      await fetch(`/api/runs/${params.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "failed", error: "Cancelled by user" }),
+      });
+      fetchData();
+    } catch {
+      console.error("Failed to cancel");
+    } finally {
+      setCancelling(false);
+    }
+  };
+
+  if (!data) {
+    return (
+      <main className="max-w-4xl mx-auto px-6 py-12">
+        <p className="text-gray-500">Loading...</p>
+      </main>
+    );
+  }
+
+  const { run, leads, toolCalls } = data;
+
+  // Filter leads: only show qualified + needs_review (if qualified count < target)
+  const qualified = leads.filter((l) => l.qualification_status === "qualified");
+  const needsReview = leads.filter((l) => l.qualification_status === "needs_review");
+  const showNeedsReview = qualified.length < (run.lead_limit || 10);
+  const visibleLeads = showNeedsReview
+    ? [...qualified, ...needsReview]
+    : qualified;
+
+  return (
+    <main className="max-w-4xl mx-auto px-6 py-12">
+      <Link href="/" className="text-sm text-blue-600 hover:underline">
+        ← Back
+      </Link>
+
+      <div className="mt-4 mb-6">
+        <div className="flex items-center gap-3 mb-2">
+          <h1 className="text-xl font-bold">Run Details</h1>
+          <span
+            className={`text-xs px-2 py-1 rounded-full ${
+              run.status === "completed"
+                ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
+                : run.status === "failed"
+                ? "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400"
+                : "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400"
+            }`}
+          >
+            {run.status}
+          </span>
+          {run.status === "running" && (
+            <button
+              onClick={handleCancel}
+              disabled={cancelling}
+              className="ml-auto text-xs px-3 py-1 border border-red-300 text-red-600 rounded hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/20 disabled:opacity-50"
+            >
+              {cancelling ? "Cancelling..." : "Cancel Run"}
+            </button>
+          )}
+        </div>
+        <p className="text-sm text-gray-700 dark:text-gray-300">{run.objective}</p>
+        <p className="text-xs text-gray-500 mt-1">
+          {new Date(run.created_at).toLocaleString()}
+          {run.actual_cost != null && run.actual_cost > 0 && ` · $${run.actual_cost.toFixed(4)}`}
+        </p>
+        {run.error && (
+          <div className="text-sm text-red-400 mt-2 bg-red-950/20 border border-red-800/30 p-3 rounded-lg">
+            {run.error}
+          </div>
+        )}
+      </div>
+
+      <ProgressTracker
+        toolCalls={toolCalls}
+        leads={leads}
+        runStatus={run.status}
+        hasIcp={!!run.refined_icp}
+      />
+
+      <div className="flex gap-4 border-b mb-4">
+        <button
+          onClick={() => setActiveTab("leads")}
+          className={`pb-2 text-sm font-medium ${
+            activeTab === "leads"
+              ? "border-b-2 border-blue-600 text-blue-600"
+              : "text-gray-500 hover:text-gray-700"
+          }`}
+        >
+          Leads ({qualified.length} qualified
+          {showNeedsReview && needsReview.length > 0
+            ? `, ${needsReview.length} review`
+            : ""}
+          )
+        </button>
+        <button
+          onClick={() => setActiveTab("tools")}
+          className={`pb-2 text-sm font-medium ${
+            activeTab === "tools"
+              ? "border-b-2 border-blue-600 text-blue-600"
+              : "text-gray-500 hover:text-gray-700"
+          }`}
+        >
+          Tool Calls ({toolCalls.length})
+        </button>
+      </div>
+
+      {activeTab === "leads" && (
+        <section className="mb-8">
+          <div className="space-y-2">
+            {visibleLeads.map((lead) => (
+              <div key={lead.id} className="border rounded-lg overflow-hidden">
+                <button
+                  onClick={() =>
+                    setExpandedLead(expandedLead === lead.id ? null : lead.id)
+                  }
+                  className="w-full text-left p-4 hover:bg-gray-50 dark:hover:bg-gray-900 transition-colors"
+                >
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <span className="font-medium text-sm">{lead.company_name}</span>
+                      {lead.company_domain && (
+                        <span className="text-xs text-gray-500 ml-2">
+                          {lead.company_domain}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-500">
+                        {(lead.confidence * 100).toFixed(0)}%
+                      </span>
+                      <span
+                        className={`text-xs px-2 py-1 rounded-full ${
+                          lead.qualification_status === "qualified"
+                            ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
+                            : "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400"
+                        }`}
+                      >
+                        {lead.qualification_status === "qualified" ? "qualified" : "needs review"}
+                      </span>
+                    </div>
+                  </div>
+                </button>
+
+                {expandedLead === lead.id && (
+                  <div className="border-t p-4 bg-gray-50 dark:bg-gray-900/50 text-sm space-y-4">
+                    {lead.fit_reasons.length > 0 && (
+                      <div>
+                        <p className="font-medium text-green-700 dark:text-green-400 mb-1">
+                          Fit Reasons
+                        </p>
+                        <ul className="list-disc list-inside text-xs space-y-1">
+                          {lead.fit_reasons.map((r, i) => (
+                            <li key={i}>{r}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {lead.concerns.length > 0 && (
+                      <div>
+                        <p className="font-medium text-yellow-700 dark:text-yellow-400 mb-1">
+                          Concerns
+                        </p>
+                        <ul className="list-disc list-inside text-xs space-y-1">
+                          {lead.concerns.map((c, i) => (
+                            <li key={i}>{c}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {lead.source_summary && (
+                      <div>
+                        <p className="font-medium mb-1">Source Summary</p>
+                        <p className="text-xs text-gray-700 dark:text-gray-300">
+                          {lead.source_summary}
+                        </p>
+                      </div>
+                    )}
+                    {lead.outreach_drafts?.[0] && (
+                      <div>
+                        <p className="font-medium mb-2">Outreach Drafts</p>
+                        {[1, 2, 3].map((n) => {
+                          const draft = lead.outreach_drafts[0];
+                          const subject = draft[
+                            `email_${n}_subject` as keyof OutreachDraft
+                          ] as string;
+                          const body = draft[
+                            `email_${n}_body` as keyof OutreachDraft
+                          ] as string;
+                          const personalization = draft[
+                            `email_${n}_personalization` as keyof OutreachDraft
+                          ] as string;
+                          if (!subject) return null;
+                          return (
+                            <div
+                              key={n}
+                              className="mb-3 bg-white dark:bg-gray-800 p-3 rounded border"
+                            >
+                              <p className="text-xs font-medium">
+                                Email {n}: {subject}
+                              </p>
+                              <p className="text-xs text-gray-600 dark:text-gray-400 mt-1 whitespace-pre-wrap">
+                                {body}
+                              </p>
+                              {personalization && (
+                                <p className="text-xs text-blue-600 dark:text-blue-400 mt-1 italic">
+                                  Personalization: {personalization}
+                                </p>
+                              )}
+                            </div>
+                          );
+                        })}
+                        {lead.outreach_drafts[0].linkedin_message && (
+                          <div className="bg-white dark:bg-gray-800 p-3 rounded border">
+                            <p className="text-xs font-medium">LinkedIn Message</p>
+                            <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+                              {lead.outreach_drafts[0].linkedin_message}
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+            {visibleLeads.length === 0 && run.status === "running" && (
+              <p className="text-sm text-gray-500">
+                Waiting for the agent to qualify leads...
+              </p>
+            )}
+            {visibleLeads.length === 0 && run.status !== "running" && (
+              <p className="text-sm text-gray-500">No leads found.</p>
+            )}
+          </div>
+        </section>
+      )}
+
+      {activeTab === "tools" && (
+        <section>
+          <div className="space-y-1">
+            {toolCalls.map((tc) => (
+              <div
+                key={tc.id}
+                className={`flex items-start gap-3 p-2 rounded text-xs ${
+                  tc.status === "error" ? "bg-red-50 dark:bg-red-900/10" : ""
+                }`}
+              >
+                <span
+                  className={`mt-0.5 w-2 h-2 rounded-full shrink-0 ${
+                    tc.status === "success" ? "bg-green-500" : "bg-red-500"
+                  }`}
+                />
+                <div className="min-w-0 flex-1">
+                  <span className="font-mono font-medium">{tc.tool_name}</span>
+                  {tc.purpose && (
+                    <span className="text-gray-500 ml-2">{tc.purpose}</span>
+                  )}
+                  {tc.error_message && (
+                    <p className="text-red-600 mt-0.5">{tc.error_message}</p>
+                  )}
+                </div>
+                <span className="text-gray-400 shrink-0">
+                  {new Date(tc.created_at).toLocaleTimeString()}
+                </span>
+              </div>
+            ))}
+            {toolCalls.length === 0 && run.status === "running" && (
+              <p className="text-sm text-gray-500">Waiting for tool calls...</p>
+            )}
+            {toolCalls.length === 0 && run.status !== "running" && (
+              <p className="text-sm text-gray-500">No tool calls recorded.</p>
+            )}
+          </div>
+        </section>
+      )}
+    </main>
+  );
+}
