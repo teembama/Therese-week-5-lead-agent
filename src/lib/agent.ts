@@ -334,7 +334,7 @@ const saveLead = tool(
         fit_reasons: isNeedsReview ? [] : args.fit_reasons,
         concerns: args.concerns,
         source_urls: args.source_urls,
-        source_summary: isNeedsReview ? "" : args.source_summary,
+        source_summary: isNeedsReview ? null : args.source_summary,
       })
       .select("id")
       .single();

@@ -203,12 +203,120 @@ function ProgressTracker({
   );
 }
 
+function PromoteLeadModal({
+  lead,
+  onClose,
+  onPromoted,
+}: {
+  lead: Lead;
+  onClose: () => void;
+  onPromoted: () => void;
+}) {
+  const [reason, setReason] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = async () => {
+    if (!reason.trim()) {
+      setError("Please explain why this lead should be qualified.");
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/leads/${lead.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ qualification_status: "qualified", review_reason: reason.trim() }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(json.error || "Failed to update lead. Please try again.");
+        return;
+      }
+      onPromoted();
+    } catch {
+      setError("Failed to update lead. Please try again.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="w-full max-w-lg rounded-lg bg-white dark:bg-gray-900 border p-5 text-sm"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-base font-semibold mb-1">Mark as Qualified</h2>
+        <p className="text-xs text-gray-500 mb-4">
+          {lead.company_name}
+          {lead.company_domain && ` · ${lead.company_domain}`}
+        </p>
+
+        {lead.concerns.length > 0 && (
+          <div className="mb-4">
+            <p className="font-medium text-yellow-700 dark:text-yellow-400 mb-1">
+              Agent&apos;s Concerns
+            </p>
+            <ul className="list-disc list-inside text-xs space-y-1">
+              {lead.concerns.map((c, i) => (
+                <li key={i}>{c}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        <label htmlFor="review-reason" className="block font-medium mb-1">
+          Reason for qualifying <span className="text-red-500">*</span>
+        </label>
+        <textarea
+          id="review-reason"
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          rows={4}
+          placeholder="Explain how the concerns above were addressed..."
+          className="w-full rounded border p-2 text-sm bg-transparent"
+          disabled={submitting}
+        />
+        <p className="text-xs text-gray-500 mt-1">
+          Outreach is not generated automatically for promoted leads.
+        </p>
+        {error && <p className="text-xs text-red-500 mt-2">{error}</p>}
+
+        <div className="flex justify-end gap-2 mt-4">
+          <button
+            onClick={onClose}
+            disabled={submitting}
+            className="text-xs px-3 py-1.5 border rounded hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSubmit}
+            disabled={submitting || !reason.trim()}
+            className="text-xs px-3 py-1.5 rounded bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
+          >
+            {submitting ? "Saving..." : "Mark as Qualified"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function RunPage() {
   const params = useParams();
   const [data, setData] = useState<RunData | null>(null);
   const [expandedLead, setExpandedLead] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [activeTab, setActiveTab] = useState<"leads" | "tools">("leads");
+  const [promotingLead, setPromotingLead] = useState<Lead | null>(null);
 
   const fetchData = useCallback(() => {
     if (!params.id) return;
@@ -380,8 +488,24 @@ export default function RunPage() {
                   </div>
                 </button>
 
+                {lead.qualification_status === "needs_review" && (
+                  <div className="px-4 pb-3 -mt-1 flex justify-end">
+                    <button
+                      onClick={() => setPromotingLead(lead)}
+                      className="text-xs px-3 py-1 border border-green-300 text-green-700 rounded hover:bg-green-50 dark:border-green-800 dark:text-green-400 dark:hover:bg-green-900/20"
+                    >
+                      Mark as Qualified
+                    </button>
+                  </div>
+                )}
+
                 {expandedLead === lead.id && (
                   <div className="border-t p-4 bg-gray-50 dark:bg-gray-900/50 text-sm space-y-4">
+                    {lead.qualification_status === "qualified" &&
+                      !lead.outreach_drafts?.[0] &&
+                      run.status !== "running" && (
+                        <p className="text-xs text-gray-500 italic">Outreach pending.</p>
+                      )}
                     {lead.fit_reasons.length > 0 && (
                       <div>
                         <p className="font-medium text-green-700 dark:text-green-400 mb-1">
@@ -511,6 +635,17 @@ export default function RunPage() {
             )}
           </div>
         </section>
+      )}
+
+      {promotingLead && (
+        <PromoteLeadModal
+          lead={promotingLead}
+          onClose={() => setPromotingLead(null)}
+          onPromoted={() => {
+            setPromotingLead(null);
+            fetchData();
+          }}
+        />
       )}
     </main>
   );
