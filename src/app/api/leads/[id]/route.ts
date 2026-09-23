@@ -39,6 +39,32 @@ export async function PATCH(
 
   const reason = review_reason.trim();
 
+  // Must be at least 10 characters
+  if (reason.length < 10) {
+    return NextResponse.json(
+      { error: "Please provide a more detailed reason (at least 10 characters)." },
+      { status: 400 }
+    );
+  }
+
+  // Must contain at least 3 words
+  const words = reason.split(/\s+/).filter((w) => w.length > 1);
+  if (words.length < 3) {
+    return NextResponse.json(
+      { error: "Please write a complete explanation with at least 3 words." },
+      { status: 400 }
+    );
+  }
+
+  // Check for keyboard mashing (more than 50% non-alpha characters)
+  const alphaRatio = (reason.match(/[a-zA-Z]/g) || []).length / reason.length;
+  if (alphaRatio < 0.5) {
+    return NextResponse.json(
+      { error: "Please provide a meaningful explanation in plain English." },
+      { status: 400 }
+    );
+  }
+
   const { data: lead, error: leadError } = await supabase
     .from("leads")
     .select("id, run_id, company_name, qualification_status")
