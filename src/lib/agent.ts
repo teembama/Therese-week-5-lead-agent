@@ -80,14 +80,25 @@ const updateRun = tool(
     if (args.error) updates.error = args.error;
     if (args.actual_cost !== undefined) updates.actual_cost = args.actual_cost;
 
-    const { error } = await supabase
+    // Only write while the run is still "running", so a cancel that lands
+    // between the check above and this write is never overwritten
+    const { data: updated, error } = await supabase
       .from("lead_runs")
       .update(updates)
-      .eq("id", args.run_id);
+      .eq("id", args.run_id)
+      .eq("status", "running")
+      .select("id");
 
     if (error) {
       return {
         content: [{ type: "text" as const, text: `Failed to update run: ${error.message}` }],
+        isError: true,
+      };
+    }
+
+    if (!updated || updated.length === 0) {
+      return {
+        content: [{ type: "text" as const, text: "Run was cancelled. Stopping." }],
         isError: true,
       };
     }
