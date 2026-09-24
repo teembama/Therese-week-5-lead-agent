@@ -243,28 +243,26 @@ function humanizeKey(key: string): string {
   return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function ResearchCriteria({
+function IcpDisplay({
   objective,
   icp,
 }: {
   objective: string;
-  icp: Record<string, unknown> | null;
+  icp: Record<string, unknown>;
 }) {
   const [open, setOpen] = useState(false);
 
   const knownKeys = new Set(ICP_FIELDS.flatMap((f) => f.keys));
   const rows: { label: string; value: string }[] = [];
-  if (icp) {
-    for (const field of ICP_FIELDS) {
-      const key = field.keys.find((k) => icp[k] != null);
-      const value = key ? formatIcpValue(icp[key]) : "";
-      if (value) rows.push({ label: field.label, value });
-    }
-    for (const [key, raw] of Object.entries(icp)) {
-      if (knownKeys.has(key)) continue;
-      const value = formatIcpValue(raw);
-      if (value) rows.push({ label: humanizeKey(key), value });
-    }
+  for (const field of ICP_FIELDS) {
+    const key = field.keys.find((k) => icp[k] != null);
+    const value = key ? formatIcpValue(icp[key]) : "";
+    if (value) rows.push({ label: field.label, value });
+  }
+  for (const [key, raw] of Object.entries(icp)) {
+    if (knownKeys.has(key)) continue;
+    const value = formatIcpValue(raw);
+    if (value) rows.push({ label: humanizeKey(key), value });
   }
 
   return (
@@ -278,22 +276,26 @@ function ResearchCriteria({
         Research Criteria
       </button>
       {open && (
-        <div className="border-t p-4 text-sm space-y-3">
-          <div>
-            <p className="text-xs font-medium text-gray-500">Your Objective</p>
+        <div className="border-t p-4 text-sm space-y-5">
+          <section>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1">
+              Your Objective
+            </h3>
             <p className="text-gray-700 dark:text-gray-300">{objective}</p>
-          </div>
-          {rows.map((row) => (
-            <div key={row.label}>
-              <p className="text-xs font-medium text-gray-500">{row.label}</p>
-              <p className="text-gray-700 dark:text-gray-300">{row.value}</p>
+          </section>
+          <section>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
+              Refined ICP
+            </h3>
+            <div className="space-y-3">
+              {rows.map((row) => (
+                <div key={row.label}>
+                  <p className="text-xs font-medium text-gray-500">{row.label}</p>
+                  <p className="text-gray-700 dark:text-gray-300">{row.value}</p>
+                </div>
+              ))}
             </div>
-          ))}
-          {!icp && (
-            <p className="text-xs text-gray-500 italic">
-              Refined criteria will appear once the agent has analyzed your objective.
-            </p>
-          )}
+          </section>
         </div>
       )}
     </div>
@@ -622,7 +624,7 @@ export default function RunPage() {
         hasIcp={!!run.refined_icp}
       />
 
-      <ResearchCriteria objective={run.objective} icp={run.refined_icp} />
+      {run.refined_icp && <IcpDisplay objective={run.objective} icp={run.refined_icp} />}
       <div className="flex gap-4 border-b mb-4">
         <button
           onClick={() => setActiveTab("leads")}
