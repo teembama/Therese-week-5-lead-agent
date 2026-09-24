@@ -109,7 +109,10 @@ function getStepStatus(
     } else if (!hasOutreach) {
       const qualifiedCount = leads.filter((l) => l.qualification_status === "qualified").length;
       const outreachCount = leads.filter((l) => l.outreach_drafts?.length > 0).length;
-      statusMessage = `Generating outreach ${outreachCount}/${qualifiedCount}...`;
+      statusMessage =
+        qualifiedCount === 0
+          ? "Evaluating companies..."
+          : `Generating outreach ${outreachCount}/${qualifiedCount}...`;
     } else {
       statusMessage = "Running final quality checks...";
     }
