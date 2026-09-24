@@ -60,87 +60,22 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Failed to create run. Please try again." }, { status: 500 });
   }
 
-  // Start agent — Sandbox on Vercel, in-process locally
-  if (process.env.VERCEL) {
-    try {
-      const { Sandbox } = await import("@vercel/sandbox");
-
-      const repoUrl = process.env.VERCEL_GIT_REPO_OWNER && process.env.VERCEL_GIT_REPO_SLUG
-        ? `https://github.com/${process.env.VERCEL_GIT_REPO_OWNER}/${process.env.VERCEL_GIT_REPO_SLUG}.git`
-        : "https://github.com/teembama/Therese-week-5-lead-agent.git";
-
-      const sandbox = await Sandbox.create({
-        source: {
-          type: "git" as const,
-          url: repoUrl,
-        },
-        timeout: 30 * 60 * 1000,
-      });
-
-      // Install dependencies
-      const install = await sandbox.runCommand({
-        cmd: "npm",
-        args: ["install"],
-        timeoutMs: 300000,
-      });
-
-      if (install.exitCode !== 0) {
-        throw new Error("Failed to install dependencies in sandbox");
-      }
-
-      // Start agent detached — returns immediately
-      sandbox.runCommand({
-        cmd: "npx",
-        args: ["tsx", "scripts/run-agent.ts", run.id],
-        env: {
-          ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || "",
-          APIFY_API_TOKEN: process.env.APIFY_API_TOKEN || "",
-          FIRECRAWL_API_KEY: process.env.FIRECRAWL_API_KEY || "",
-          NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL || "",
-          SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY || "",
-        },
-        detached: true,
-        timeoutMs: 25 * 60 * 1000,
-      }).catch((err) => {
-        console.error("Sandbox agent error:", err);
-        supabase
-          .from("lead_runs")
-          .update({
-            status: "failed",
-            error: "The research service encountered an error. Please try again.",
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", run.id)
-          .eq("status", "running");
-      });
-    } catch (err) {
-      console.error("Sandbox launch failed:", err);
-      await supabase
-        .from("lead_runs")
-        .update({
-          status: "failed",
-          error: "The research service is temporarily unavailable. Please try again shortly.",
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", run.id);
-    }
-  } else {
-    const { runAgent } = await import("@/lib/agent");
-    runAgent({
-      runId: run.id,
-      objective: objective.trim(),
-      leadLimit: leadTarget,
-      candidateLimit,
-      scrapeLimit: candidateLimit,
-      agentTurnLimit: 25,
-    }).catch((err) => {
-      console.error("Agent failed:", err);
-      supabase
-        .from("lead_runs")
-        .update({ status: "failed", error: String(err), updated_at: new Date().toISOString() })
-        .eq("id", run.id);
-    });
-  }
+  // Start agent in-process in the background
+  const { runAgent } = await import("@/lib/agent");
+  runAgent({
+    runId: run.id,
+    objective: objective.trim(),
+    leadLimit: leadTarget,
+    candidateLimit,
+    scrapeLimit: candidateLimit,
+    agentTurnLimit: 25,
+  }).catch((err) => {
+    console.error("Agent failed:", err);
+    supabase
+      .from("lead_runs")
+      .update({ status: "failed", error: String(err), updated_at: new Date().toISOString() })
+      .eq("id", run.id);
+  });
 
   return NextResponse.json({ run_id: run.id, status: "running" });
 }

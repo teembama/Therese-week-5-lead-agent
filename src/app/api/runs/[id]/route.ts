@@ -106,16 +106,5 @@ export async function PATCH(
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  // Best-effort: stop the Sandbox if on Vercel
-  if (process.env.VERCEL) {
-    try {
-      const { Sandbox } = await import("@vercel/sandbox");
-      const sandbox = await Sandbox.get({ name: `run-${id.slice(0, 8)}` });
-      if (sandbox) await sandbox.stop();
-    } catch {
-      // Sandbox may already be stopped
-    }
-  }
-
   return NextResponse.json({ status: "cancelled" });
 }
