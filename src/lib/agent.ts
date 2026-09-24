@@ -163,10 +163,15 @@ export interface RunContext {
   runId: string;
   objective: string;
   limits: RunLimits;
-  usage: { candidates: number; scrapes: number; qualified: number; toolCalls: number };
+  usage: { candidates: number; scrapes: number; qualified: number; toolCalls: number; discoveryCalls: number };
   savedLeadKeys: Set<string>;
   seenCandidateDomains: Set<string>;
   scrapeAttempts: Map<string, { attempts: number; succeeded: boolean }>;
+  refinedIcp: Record<string, unknown> | null;
+  searchPlan: SavedSearchPlan | null;
+  searchedTerms: Set<string>;
+  // LinkedIn size band of each discovered company, keyed like seenCandidateDomains
+  candidateBands: Map<string, string>;
   store: RunStore;
   fetch: typeof fetch;
 }
@@ -194,10 +199,14 @@ export async function createRunContext(
       agentTurnLimit: clampLimit(run.agent_turn_limit ?? DEFAULT_AGENT_TURN_LIMIT, 1, MAX_AGENT_TURN_LIMIT),
       maxToolCalls: MAX_TOOL_CALLS_PER_RUN,
     },
-    usage: { candidates: 0, scrapes: 0, qualified, toolCalls: 0 },
+    usage: { candidates: 0, scrapes: 0, qualified, toolCalls: 0, discoveryCalls: 0 },
     savedLeadKeys,
     seenCandidateDomains: new Set(),
     scrapeAttempts: new Map(),
+    refinedIcp: null,
+    searchPlan: null,
+    searchedTerms: new Set(),
+    candidateBands: new Map(),
     store,
     fetch: fetchImpl,
   };
@@ -504,6 +513,123 @@ function suggestIndustries(value: string): string[] {
 
 export const LINKEDIN_COMPANY_SIZES = ["1-10", "11-50", "51-200", "201-500", "501-1000", "1001-5000", "5001-10000", "10001+"] as const;
 
+// "51-200" -> {start: 51, end: 200}; "10001+" -> {start: 10001, end: Infinity}
+function parseBand(band: string | null | undefined): { start: number; end: number } | null {
+  const m = band?.match(/^(\d+)(?:-(\d+)|\+)$/);
+  if (!m) return null;
+  return { start: Number(m[1]), end: m[2] ? Number(m[2]) : Infinity };
+}
+
+// --- Search plan ---
+// Saved with the refined ICP (update_run) and enforced by discover_companies: searches may only
+// use the plan's terms and filters, so discovery cannot drift from the user's objective.
+
+export const MAX_DISCOVERY_CALLS_PER_RUN = 4;
+const SEARCH_TERM_FILLER = new Set([
+  "b2b", "saas", "startup", "startups", "company", "companies", "platform", "platforms", "software",
+]);
+
+export const searchPlanSchema = z.object({
+  filters: z.object({
+    location: z.string().trim().min(1).optional().describe("Geography from the objective, e.g. 'United States'"),
+    employee_range: z
+      .object({ min: z.number().int().min(0).optional(), max: z.number().int().min(1).optional() })
+      .optional()
+      .describe("Headcount range stated in the objective, e.g. '10 to 100 employees' → {min: 10, max: 100}. Omit if none is stated."),
+    company_sizes: z
+      .array(z.enum(LINKEDIN_COMPANY_SIZES))
+      .optional()
+      .describe("LinkedIn size bands that overlap employee_range"),
+    industries: z
+      .array(z.string())
+      .max(20)
+      .optional()
+      .describe("Exact LinkedIn industry labels for the type of company the objective names, e.g. SaaS → 'Software Development'"),
+  }),
+  names_company_type: z
+    .boolean()
+    .describe("true if the objective names a type of company (e.g. SaaS, logistics firms, law firms); industries are then required"),
+  search_terms: z
+    .array(
+      z.object({
+        term: z.string().describe("1-2 words, no filler words"),
+        reason: z.string().describe("How this term follows from the objective's meaning"),
+      })
+    )
+    .min(3)
+    .max(6),
+});
+export type SearchPlan = z.infer<typeof searchPlanSchema>;
+
+export interface SavedSearchPlan {
+  plan: SearchPlan;
+  industryIds: string[];
+  terms: Set<string>; // normalized terms
+}
+
+function linkedinKey(url: string): string {
+  return `linkedin:${url.toLowerCase().replace(/\/+$/, "")}`;
+}
+
+function normalizeTerm(term: string): string {
+  return term.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function sameSet(a: readonly string[] = [], b: readonly string[] = []): boolean {
+  const x = new Set(a);
+  const y = new Set(b);
+  return x.size === y.size && [...x].every((v) => y.has(v));
+}
+
+// Returns the plan's problems (empty when valid) and its resolved industry IDs
+export function validateSearchPlan(plan: SearchPlan): { errors: string[]; industryIds: string[] } {
+  const errors: string[] = [];
+  const { filters } = plan;
+
+  const { ids: industryIds, unknown } = resolveIndustries(filters.industries ?? []);
+  for (const u of unknown) {
+    errors.push(`Unknown LinkedIn industry "${u}" (similar: ${suggestIndustries(u).join("; ") || "none"}).`);
+  }
+  if (plan.names_company_type && industryIds.length === 0 && unknown.length === 0) {
+    errors.push("The objective names a type of company, so filters.industries is required (e.g. SaaS → 'Software Development').");
+  }
+
+  const range = filters.employee_range;
+  if (range) {
+    if (range.min === undefined && range.max === undefined) errors.push("employee_range needs min, max, or both.");
+    if (range.min !== undefined && range.max !== undefined && range.min > range.max) {
+      errors.push("employee_range min is greater than max.");
+    }
+    if (!filters.company_sizes?.length) errors.push("company_sizes is required when employee_range is set.");
+    for (const band of filters.company_sizes ?? []) {
+      const b = parseBand(band)!;
+      if (b.end < (range.min ?? 0) || b.start > (range.max ?? Infinity)) {
+        errors.push(`Size band ${band} does not overlap the employee range.`);
+      }
+    }
+  } else if (filters.company_sizes?.length) {
+    errors.push("company_sizes requires employee_range (the headcount range stated in the objective).");
+  }
+
+  // Also enforced by the Zod schema; repeated here so the handler never relies on it
+  if (plan.search_terms.length < 3 || plan.search_terms.length > 6) {
+    errors.push(`search_terms must have 3-6 terms (got ${plan.search_terms.length}).`);
+  }
+  const seen = new Set<string>();
+  for (const { term, reason } of plan.search_terms) {
+    const t = normalizeTerm(term);
+    const words = t.split(" ").filter(Boolean);
+    if (words.length < 1 || words.length > 2) errors.push(`Search term "${term}" must be 1-2 words.`);
+    const filler = words.filter((w) => SEARCH_TERM_FILLER.has(w));
+    if (filler.length) errors.push(`Search term "${term}" contains filler word(s) (${filler.join(", ")}); the filters already cover those.`);
+    if (reason.trim().length < 10) errors.push(`Search term "${term}" needs a short reason explaining how it follows from the objective.`);
+    if (seen.has(t)) errors.push(`Search term "${term}" is repeated.`);
+    seen.add(t);
+  }
+
+  return { errors, industryIds };
+}
+
 // --- Tools, bound to one run ---
 // No tool accepts a run_id: the run is fixed by the context the tools were created with.
 
@@ -542,22 +668,43 @@ export function createRunTools(ctx: RunContext) {
 
   const updateRun = tool(
     "update_run",
-    "Update this run's record: save the refined ICP, set the final status (completed or failed), and set a short user-facing message.",
+    "Update this run's record: save the refined ICP and its search plan (required before discovery), set the final status (completed or failed), and set a short user-facing message.",
     {
       refined_icp: z.any().optional(),
+      search_plan: searchPlanSchema.optional().describe("Search plan saved with the refined ICP; discover_companies only accepts its terms and filters"),
       status: z.enum(["completed", "failed"]).optional(),
       error: z.string().optional().describe("Short, plain-language message for the user"),
     },
     async (args) => {
       const parts = [
         args.refined_icp ? "refined_icp=yes" : null,
+        args.search_plan ? `search_plan=[${args.search_plan.search_terms.map((t) => t.term).join(", ")}]` : null,
         args.status ? `status=${args.status}` : null,
         args.error ? "message=yes" : null,
       ].filter(Boolean);
 
-      return audited(ctx, "update_run", parts.join(" ") || "(no fields)", async () => {
+      return audited(ctx, "update_run", clip(parts.join(" ") || "(no fields)", 500), async () => {
+        let saved: SavedSearchPlan | null = null;
+        if (args.search_plan) {
+          if (ctx.usage.discoveryCalls > 0) {
+            return reject("The search plan is fixed once discovery has started; it cannot be changed.", "plan");
+          }
+          const { errors, industryIds } = validateSearchPlan(args.search_plan);
+          if (errors.length) return reject(`Search plan rejected: ${errors.join(" ")}`, "plan");
+          saved = {
+            plan: args.search_plan,
+            industryIds,
+            terms: new Set(args.search_plan.search_terms.map((t) => normalizeTerm(t.term))),
+          };
+        }
+
         const updates: Record<string, unknown> = {};
-        if (args.refined_icp) updates.refined_icp = args.refined_icp;
+        const icp = args.refined_icp ?? (saved ? ctx.refinedIcp : null);
+        if (icp || saved) {
+          // The search plan is stored inside refined_icp so it is displayed and audited with it
+          const plan = saved?.plan ?? ctx.searchPlan?.plan;
+          updates.refined_icp = { ...(icp ?? {}), ...(plan ? { search_plan: plan } : {}) };
+        }
         if (args.status) updates.status = args.status;
         if (args.error) updates.error = args.error;
         if (Object.keys(updates).length === 0) return reject("Nothing to update.", "validation");
@@ -565,26 +712,21 @@ export function createRunTools(ctx: RunContext) {
         // Conditional write: a cancelled or finished run is never revived or overwritten
         const result = await ctx.store.updateRunIfRunning(ctx.runId, updates);
         if (result === "not_running") return STOPPED;
-        return { text: "Run updated.", summary: `updated ${parts.join(" ")}` };
+        if (args.refined_icp) ctx.refinedIcp = args.refined_icp;
+        if (saved) ctx.searchPlan = saved;
+        return { text: saved ? "Run updated; search plan saved." : "Run updated.", summary: `updated ${parts.join(" ")}` };
       });
     }
   );
 
   const discoverCompanies = tool(
     "discover_companies",
-    "Search LinkedIn for companies matching the ICP criteria. Returns company profiles with employee counts, locations, industries, and descriptions.",
+    `Search LinkedIn for companies matching the ICP criteria. Returns company profiles with employee counts, locations, industries, and descriptions, plus LinkedIn's total match count. Only accepts terms and filters from the saved search plan; at most ${MAX_DISCOVERY_CALLS_PER_RUN} calls per run, one per term.`,
     {
-      search_query: z.string().describe("Keywords describing the type of company, e.g. 'workflow automation SaaS'. No geography — use location."),
-      location: z.string().optional().describe("Geography filter, e.g. 'United States', 'Nigeria'"),
-      company_sizes: z
-        .array(z.enum(LINKEDIN_COMPANY_SIZES))
-        .optional()
-        .describe("LinkedIn company-size bands matching the ICP's headcount hard filter. Include every band that overlaps the range, e.g. 10-100 employees → ['11-50', '51-200']. Omit if the ICP has no size constraint."),
-      industries: z
-        .array(z.string())
-        .max(20)
-        .optional()
-        .describe("LinkedIn industry names (exact LinkedIn labels, e.g. 'Software Development', 'IT Services and IT Consulting') matching the ICP's industry hard filter. Omit if the ICP has no industry constraint."),
+      search_query: z.string().describe("One term from the saved search plan's search_terms"),
+      location: z.string().optional().describe("The saved plan's location filter"),
+      company_sizes: z.array(z.enum(LINKEDIN_COMPANY_SIZES)).optional().describe("The saved plan's company_sizes filter"),
+      industries: z.array(z.string()).max(20).optional().describe("The saved plan's industries filter (exact LinkedIn labels)"),
       max_results: z.number().int().min(1).max(MAX_RESULTS_PER_DISCOVERY_CALL).describe(`Results to request (max ${MAX_RESULTS_PER_DISCOVERY_CALL}). Counts toward the run's candidate budget; a single call may use at most half of it.`),
     },
     async (args) => {
@@ -600,11 +742,36 @@ export function createRunTools(ctx: RunContext) {
         const apiToken = process.env.APIFY_API_TOKEN;
         if (!apiToken) return reject("Company discovery is not configured.", "config");
 
-        // Unknown industry names are rejected before any budget is reserved
+        // Every search must come from the saved plan: its terms and exactly its filters
+        const saved = ctx.searchPlan;
+        if (!saved) {
+          return reject("No search plan saved. Save the refined ICP with a search_plan (update_run) before discovering companies.", "plan");
+        }
+        const planFilters = saved.plan.filters;
+        const term = normalizeTerm(args.search_query);
+        if (!saved.terms.has(term)) {
+          const allowed = saved.plan.search_terms.map((t) => `"${t.term}"`).join(", ");
+          return reject(`"${args.search_query}" is not in the saved search plan. Use one of: ${allowed}.`, "plan");
+        }
         const { ids: industryIds, unknown } = resolveIndustries(args.industries ?? []);
-        if (unknown.length > 0) {
-          const hints = unknown.map((u) => `"${u}" (similar: ${suggestIndustries(u).join("; ") || "none"})`).join(", ");
-          return reject(`Unknown LinkedIn industry name(s): ${hints}. Use exact LinkedIn labels, or omit industries.`, "validation");
+        const mismatched = [
+          (args.location ?? "").trim().toLowerCase() !== (planFilters.location ?? "").trim().toLowerCase() ? "location" : null,
+          !sameSet(args.company_sizes, planFilters.company_sizes) ? "company_sizes" : null,
+          unknown.length > 0 || !sameSet(industryIds, saved.industryIds) ? "industries" : null,
+        ].filter(Boolean);
+        if (mismatched.length) {
+          return reject(
+            `Filters differ from the saved search plan (${mismatched.join(", ")}). Use location="${planFilters.location ?? ""}", company_sizes=[${(planFilters.company_sizes ?? []).join(", ")}], industries=[${(planFilters.industries ?? []).join(", ")}].`,
+            "plan"
+          );
+        }
+
+        // All checks and reservations below are synchronous, so parallel calls cannot race past them
+        if (ctx.searchedTerms.has(term)) {
+          return reject(`"${args.search_query}" was already searched in this run; it would return the same companies. Use another term from the plan.`, "plan");
+        }
+        if (ctx.usage.discoveryCalls >= MAX_DISCOVERY_CALLS_PER_RUN) {
+          return reject(`Discovery call limit reached (${MAX_DISCOVERY_CALLS_PER_RUN} per run). Work with the candidates you have.`, "limit");
         }
 
         // Reserve budget synchronously; the model's number is only a request
@@ -614,6 +781,8 @@ export function createRunTools(ctx: RunContext) {
         }
         const granted = Math.min(Math.max(1, Math.floor(args.max_results)), perCallCap, remaining, MAX_RESULTS_PER_DISCOVERY_CALL);
         ctx.usage.candidates += granted;
+        ctx.usage.discoveryCalls++; // every attempt counts toward the call limit
+        ctx.searchedTerms.add(term);
         const sentFilters = `locations=[${args.location ?? ""}] companySize=[${sizes?.join(",") ?? ""}] industryIds=[${industryIds.join(",")}]`;
 
         let response: Response;
@@ -629,7 +798,7 @@ export function createRunTools(ctx: RunContext) {
                 searchQuery: args.search_query,
                 ...(args.location ? { locations: [args.location] } : {}),
                 ...(sizes ? { companySize: sizes } : {}),
-                ...(industryIds.length ? { industryIds } : {}),
+                ...(saved.industryIds.length ? { industryIds: saved.industryIds } : {}),
                 maxItems: granted,
                 scraperMode: "full", // "short" results omit website and size
               }),
@@ -637,12 +806,14 @@ export function createRunTools(ctx: RunContext) {
           );
         } catch (err) {
           ctx.usage.candidates -= granted; // nothing was returned, so nothing was spent
+          ctx.searchedTerms.delete(term); // the term may be retried; the attempt still counts
           console.error(`APIFY REQUEST FAILED (run ${ctx.runId}):`, err);
           return reject("Company discovery request failed (network error).", "network");
         }
 
         if (!response.ok) {
           ctx.usage.candidates -= granted;
+          ctx.searchedTerms.delete(term);
           return reject(`Company discovery service returned an error (HTTP ${response.status}).`, "upstream");
         }
 
@@ -651,10 +822,12 @@ export function createRunTools(ctx: RunContext) {
           results = await response.json();
         } catch {
           ctx.usage.candidates -= granted;
+          ctx.searchedTerms.delete(term);
           return reject("Company discovery returned an unreadable response.", "malformed");
         }
         if (!Array.isArray(results)) {
           ctx.usage.candidates -= granted;
+          ctx.searchedTerms.delete(term);
           return reject("Company discovery returned an unexpected response.", "malformed");
         }
 
@@ -664,6 +837,10 @@ export function createRunTools(ctx: RunContext) {
 
         // Count what was actually returned against the budget; refund the unused reservation
         ctx.usage.candidates -= granted - profiles.length;
+
+        // LinkedIn's total matches for this search; an empty result means there were none
+        const meta = (profiles[0]?._meta as { pagination?: { totalResultCount?: unknown } } | undefined)?.pagination;
+        const totalMatches = typeof meta?.totalResultCount === "number" ? meta.totalResultCount : profiles.length === 0 ? 0 : null;
 
         const mapped = profiles.map((r) => {
           const website = typeof r.website === "string" ? r.website : "";
@@ -706,7 +883,7 @@ export function createRunTools(ctx: RunContext) {
             filteredOut++;
             continue;
           }
-          const key = domain ?? (c.linkedinUrl ? `linkedin:${c.linkedinUrl.toLowerCase().replace(/\/+$/, "")}` : null);
+          const key = domain ?? (c.linkedinUrl ? linkedinKey(c.linkedinUrl) : null);
           if (!key) {
             filteredOut++;
             continue;
@@ -716,6 +893,11 @@ export function createRunTools(ctx: RunContext) {
             continue;
           }
           ctx.seenCandidateDomains.add(key);
+          // Remember the size band for save_lead's size check
+          if (c.employeeCountRange) {
+            ctx.candidateBands.set(key, c.employeeCountRange);
+            if (c.linkedinUrl) ctx.candidateBands.set(linkedinKey(c.linkedinUrl), c.employeeCountRange);
+          }
           companies.push(c);
         }
 
@@ -726,13 +908,14 @@ export function createRunTools(ctx: RunContext) {
             count: companies.length,
             filtered_out: filteredOut,
             duplicates_removed: duplicates,
+            linkedin_total_matches: totalMatches,
             granted,
             per_call_cap: perCallCap,
             candidate_budget_used: used,
             candidate_budget_remaining: limit - ctx.usage.candidates,
             companies,
           }),
-          summary: `granted=${granted} returned=${profiles.length} kept=${companies.length} filtered_out=${filteredOut} duplicates=${duplicates} budget_used=${used} sent: ${sentFilters}`,
+          summary: `linkedin_total_matches=${totalMatches ?? "unknown"} granted=${granted} returned=${profiles.length} kept=${companies.length} filtered_out=${filteredOut} duplicates=${duplicates} budget_used=${used} sent: ${sentFilters}`,
         };
       });
     }
@@ -858,14 +1041,46 @@ export function createRunTools(ctx: RunContext) {
     },
     async (args) => {
       const domain = normalizeDomain(args.company_domain);
-      const isQualified = args.qualification_status === "qualified";
-      const inputSummary = `company="${clip(args.company_name, 100)}" domain=${domain ?? "none"} status=${args.qualification_status} confidence=${args.confidence} sources=${args.sources?.length ?? 0} outreach=${args.outreach ? "yes" : "no"}`;
+      const hasLinkedinMessage = !!args.outreach?.linkedin_message?.trim();
+      const inputSummary = `company="${clip(args.company_name, 100)}" domain=${domain ?? "none"} status=${args.qualification_status} confidence=${args.confidence} sources=${args.sources?.length ?? 0} outreach=${args.outreach ? "yes" : "no"} linkedin_message=${hasLinkedinMessage ? "yes" : "no"}`;
 
       return audited(ctx, "save_lead", inputSummary, async () => {
         if (await runStopped(ctx)) return STOPPED;
 
         if (!args.company_name.trim()) {
           return reject("company_name is required and cannot be empty.", "validation");
+        }
+
+        // Size band: a "qualified" lead whose LinkedIn size band extends beyond the objective's
+        // employee range is saved as needs_review instead (the band alone cannot confirm the fit)
+        let status = args.qualification_status;
+        const concerns = [...args.concerns];
+        let downgradeNote = "";
+        const range = ctx.searchPlan?.plan.filters.employee_range;
+        if (status === "qualified" && range) {
+          const linkedinUrl = args.source_urls.find((u) => /linkedin\.com\/company\//i.test(u));
+          const band =
+            (domain ? ctx.candidateBands.get(domain) : undefined) ??
+            (linkedinUrl ? ctx.candidateBands.get(linkedinKey(linkedinUrl)) : undefined);
+          const b = parseBand(band);
+          const min = range.min ?? 0;
+          const max = range.max ?? Infinity;
+          if (band && b && (b.start < min || b.end > max)) {
+            status = "needs_review";
+            const rangeText = `${range.min ?? 0}-${range.max ?? "any"}`;
+            downgradeNote = `LinkedIn size band ${band} extends beyond the objective's ${rangeText} employee range, so the size fit cannot be confirmed.`;
+            concerns.unshift(downgradeNote);
+          }
+        }
+        const isQualified = status === "qualified";
+
+        // Qualified leads need the full outreach pack, including the LinkedIn message. Rejected
+        // before anything is reserved or written, so a corrected retry cannot create a duplicate.
+        if (isQualified && (!args.outreach || !hasLinkedinMessage)) {
+          return reject(
+            `${args.company_name} is qualified but its outreach is incomplete: a 3-email sequence and outreach.linkedin_message are required. Nothing was saved; call save_lead again with the full outreach.`,
+            "validation"
+          );
         }
 
         // Synchronous check-and-reserve (no await between them), so parallel saves cannot
@@ -880,7 +1095,7 @@ export function createRunTools(ctx: RunContext) {
         ctx.savedLeadKeys.add(key);
         if (isQualified) ctx.usage.qualified++;
 
-        const isNeedsReview = args.qualification_status === "needs_review";
+        const isNeedsReview = status === "needs_review";
 
         // Insert lead — needs_review leads get basic info only until a human promotes them
         let leadId: string;
@@ -889,10 +1104,10 @@ export function createRunTools(ctx: RunContext) {
             run_id: ctx.runId,
             company_name: args.company_name,
             company_domain: domain ?? args.company_domain ?? null,
-            qualification_status: args.qualification_status,
+            qualification_status: status,
             confidence: args.confidence,
             fit_reasons: isNeedsReview ? [] : args.fit_reasons,
-            concerns: args.concerns,
+            concerns,
             source_urls: args.source_urls,
             source_summary: isNeedsReview ? null : args.source_summary,
           });
@@ -907,9 +1122,10 @@ export function createRunTools(ctx: RunContext) {
         const counts = `qualified=${ctx.usage.qualified}/${ctx.limits.leadLimit}`;
 
         if (isNeedsReview) {
+          const downgraded = downgradeNote ? ` Saved as needs_review instead of qualified: ${downgradeNote} It does not count toward the qualified target.` : "";
           return {
-            text: `Lead saved for human review: ${args.company_name} (needs_review, confidence: ${args.confidence}). ID: ${leadId}. Sources and outreach are not stored for needs_review leads.`,
-            summary: `saved lead ${leadId} (needs_review) ${counts}`,
+            text: `Lead saved for human review: ${args.company_name} (needs_review, confidence: ${args.confidence}). ID: ${leadId}. Sources and outreach are not stored for needs_review leads.${downgraded}`,
+            summary: `saved lead ${leadId} (needs_review${downgradeNote ? ", downgraded from qualified: size band" : ""}) ${counts}`,
           };
         }
 
@@ -944,8 +1160,8 @@ export function createRunTools(ctx: RunContext) {
         }
 
         return {
-          text: `Lead saved: ${args.company_name} (${args.qualification_status}, confidence: ${args.confidence}). ID: ${leadId}. ${counts}.`,
-          summary: `saved lead ${leadId} (${args.qualification_status}) ${counts}`,
+          text: `Lead saved: ${args.company_name} (${status}, confidence: ${args.confidence}). ID: ${leadId}. ${counts}.`,
+          summary: `saved lead ${leadId} (${status}) ${counts}`,
         };
       });
     }
@@ -1005,17 +1221,24 @@ const SYSTEM_PROMPT = `You are Koya Lead Studio — an AI lead research and outr
    The business_problem field must come from the user's objective. If the user did not state a business problem or need, set business_problem to 'Not specified by user' rather than inventing one. Do not infer or fabricate business problems, buyer personas, or value propositions based on Koya's offering or your own assumptions. The ICP should reflect what the user actually asked for.
       The same rule applies to buyer_persona. If the user did not describe a buyer or decision-maker, set buyer_persona to 'Not specified by user.' Do not guess who the buyer might be.
 
-   Save the refined ICP to the run record using update_run before company discovery begins.
+   Save the refined ICP to the run record using update_run before company discovery begins, together with a search_plan. discover_companies accepts only the plan's terms and filters, and the plan cannot change once discovery starts.
+
+   Search plan filters come directly from the user's objective:
+   - location: the geography the objective names.
+   - employee_range: the headcount range the objective states, and company_sizes: the LinkedIn size bands that overlap it.
+   - industries: exact LinkedIn industry labels. If the objective names a type of company, set names_company_type to true and include the matching industries (e.g. SaaS → Software Development).
+
+   Search plan search_terms: 3-6 terms, each 1-2 words, each with a short reason explaining how it follows from the objective's meaning.
+   - Search terms help FIND companies. They never add new requirements; the user's objective alone decides who qualifies.
+   - If the objective names a niche, every term must stay within that niche.
+   - No filler words (B2B, SaaS, startup, company, platform, software); the filters already cover those.
 
 2. DISCOVER candidate companies.
 
-   Use discover_companies with short, focused queries derived from the refined ICP. Search engines match a few strong terms far better than a long list of criteria, so never put every ICP criterion into one query.
+   Use discover_companies with one search term from the saved plan per call and exactly the plan's filters (location, company_sizes, industries). The tool rejects anything else.
 
-   - Build each query from 2-4 of the user's own terms, for example: industry + geography; industry + geography + company type; industry + geography + the operational need the user named; product/service category + geography.
-   - Put hard constraints the tool can filter in its filter parameters, derived from the refined ICP: headcount in company_sizes (every LinkedIn band overlapping the range), industry in industries (exact LinkedIn labels), geography in location. Keep search_query for the type of company. Criteria the tool cannot filter (such as revenue) remain hard filters; verify them during research instead of packing them into the query.
-   - Start with 1-2 queries. Results often include job boards, social profiles, directories, review sites, "top 10" articles, and government pages. These are not candidates. If a query returns mostly such results, try a different combination of ICP terms rather than rewording the same query. Never run near-identical queries.
+   - At most 4 discovery calls per run, each with a different term. Each response reports linkedin_total_matches: a term with few matches is exhausted, a term with many has more candidates than one call returns.
    - A candidate is an operating company with its own first-party website. Use the returned domain field to deduplicate. The same company must never be researched or saved twice.
-   - Use specific keyword terms that describe the type of company. For example 'workflow automation SaaS' or 'HR software startup' rather than broad terms like 'B2B SaaS companies.' Put geography in the location parameter, not the keyword.
    - LinkedIn profile fields (employeeCountRange, location, industries) are acceptable evidence for those criteria; cite the linkedinUrl as the source. They are self-reported size bands, so a band that straddles a hard filter (e.g. 51-200 against a 10-100 limit) is needs_review, not qualified. Descriptions alone do not establish the business problem.
 
    Candidate budget: candidate_limit is the total number of results across ALL discover_companies calls in this run. A single call may use at most half of it (per_call_cap), so there is always room for a second, different query. The tool enforces both and reports granted, per_call_cap and the remaining budget; stop discovering once the budget is used.
@@ -1081,6 +1304,8 @@ const SYSTEM_PROMPT = `You are Koya Lead Studio — an AI lead research and outr
 6. SAVE qualified leads.
 
    Never save more qualified leads than the lead target. save_lead rejects qualified leads past the target and rejects companies already saved in this run.
+
+   A qualified lead must include the full outreach (3 emails and outreach.linkedin_message); save_lead rejects it otherwise and saves nothing, so correct it and save again. save_lead saves a qualified lead as needs_review when its LinkedIn size band extends beyond the objective's employee range, and says so in its response.
 
    Stop searching and qualifying once the required number of qualified leads has been reached.
 

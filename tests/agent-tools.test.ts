@@ -9,6 +9,7 @@ import {
   AGENT_MODEL,
   AGENT_SKILLS,
   LEAD_TOOL_NAMES,
+  MAX_DISCOVERY_CALLS_PER_RUN,
   type RunContext,
   type RunRecord,
   type RunStore,
@@ -100,6 +101,7 @@ function makeFetch(opts: {
   returnCount?: (requested: number) => number;
   extraResults?: Row[];
   firecrawlStatus?: (call: number) => number;
+  totalMatches?: number;
 } = {}) {
   const calls: FetchCall[] = [];
   let company = 0;
@@ -126,6 +128,8 @@ function makeFetch(opts: {
           pageType: "COMPANY",
         });
       }
+      // The actor attaches LinkedIn's pagination metadata (total matches) to each item
+      for (const it of items) it._meta = { pagination: { totalResultCount: opts.totalMatches ?? 100 } };
       return new Response(JSON.stringify(items), { status: 200 });
     }
     firecrawlCalls++;
@@ -139,7 +143,22 @@ function makeFetch(opts: {
   return { impl, calls, apifyCalls: () => calls.filter((c) => c.url.includes("apify")) };
 }
 
-async function setup(store: MemoryStore, runId: string, fetchImpl: typeof fetch) {
+function terms(...words: string[]) {
+  return words.map((term) => ({ term, reason: `Test term ${term} for the objective` }));
+}
+
+function plan(overrides: { filters?: Row; names_company_type?: boolean; search_terms?: Row[] } = {}): Row {
+  return {
+    filters: {},
+    names_company_type: false,
+    search_terms: terms("q", "q1", "q2", "q3", "q4", "q5"),
+    ...overrides,
+  };
+}
+
+// Creates the run's tools. Unless `searchPlan` is false, a search plan is saved first through
+// update_run (as the agent must), then that setup call is cleared from the log and counters.
+async function setup(store: MemoryStore, runId: string, fetchImpl: typeof fetch, opts: { searchPlan?: Row | false } = {}) {
   const ctx = (await createRunContext(runId, store, fetchImpl)) as RunContext;
   assert.ok(ctx, "context should be created for a running run");
   const tools = createRunTools(ctx);
@@ -150,8 +169,21 @@ async function setup(store: MemoryStore, runId: string, fetchImpl: typeof fetch)
     const res = await t.handler(args as never, {});
     return { isError: !!res.isError, text: (res.content[0] as { text: string }).text };
   };
+  if (opts.searchPlan !== false) {
+    const saved = await call("update_run", { refined_icp: { industries: ["test"] }, search_plan: opts.searchPlan ?? plan() });
+    assert.equal(saved.isError, false, `setup plan should be valid: ${saved.text}`);
+    store.toolCalls = store.toolCalls.filter((c) => c.run_id !== runId);
+    ctx.usage.toolCalls = 0;
+  }
   return { ctx, tools, call };
 }
+
+const OUTREACH = {
+  email_1_subject: "s1", email_1_body: "b1", email_1_personalization: "p1",
+  email_2_subject: "s2", email_2_body: "b2", email_2_personalization: "p2",
+  email_3_subject: "s3", email_3_body: "b3", email_3_personalization: "p3",
+  linkedin_message: "Short LinkedIn note",
+};
 
 function lead(name: string, domain: string, status = "qualified"): Row {
   return {
@@ -163,6 +195,7 @@ function lead(name: string, domain: string, status = "qualified"): Row {
     concerns: [],
     source_urls: [`https://${domain}`],
     source_summary: "summary",
+    outreach: OUTREACH,
   };
 }
 
@@ -271,17 +304,30 @@ test("denylisted and repeated domains are dropped from discovery results", async
 test("actor receives its real input field names; filters are omitted when not given", async () => {
   store.addRun("A", { candidate_limit: 8 });
   const f = makeFetch();
-  const { call } = await setup(store, "A", f.impl);
-  await call("discover_companies", { search_query: "hr software", location: "United States", max_results: 20 });
+  const { call } = await setup(store, "A", f.impl, {
+    searchPlan: plan({ filters: { location: "United States" }, search_terms: terms("hr tech", "payroll", "recruiting") }),
+  });
+  await call("discover_companies", { search_query: "hr tech", location: "United States", max_results: 20 });
   const c = f.apifyCalls()[0];
   assert.match(c.url, /harvestapi~linkedin-company-search/);
-  assert.deepEqual(c.body, { searchQuery: "hr software", locations: ["United States"], maxItems: 4, scraperMode: "full" });
+  assert.deepEqual(c.body, { searchQuery: "hr tech", locations: ["United States"], maxItems: 4, scraperMode: "full" });
 });
 
 test("size and industry filters pass through, with industry names resolved to LinkedIn IDs", async () => {
   store.addRun("A", { candidate_limit: 12 });
   const f = makeFetch();
-  const { call } = await setup(store, "A", f.impl);
+  const { call } = await setup(store, "A", f.impl, {
+    searchPlan: plan({
+      filters: {
+        location: "United States",
+        employee_range: { min: 10, max: 100 },
+        company_sizes: ["11-50", "51-200"],
+        industries: ["Software Development", "IT Services and IT Consulting"],
+      },
+      names_company_type: true,
+      search_terms: terms("workflow automation", "logistics", "payroll"),
+    }),
+  });
   await call("discover_companies", {
     search_query: "workflow automation",
     location: "United States",
@@ -299,13 +345,13 @@ test("size and industry filters pass through, with industry names resolved to Li
   assert.match(log.result_summary, /sent: locations=\[United States\] companySize=\[11-50,51-200\] industryIds=\[4,96\]/);
 });
 
-test("unknown industry names are rejected before any Apify call or budget use", async () => {
+test("industries that differ from the plan (including unknown names) are rejected before any Apify call", async () => {
   store.addRun("A", { candidate_limit: 12 });
   const f = makeFetch();
   const { ctx, call } = await setup(store, "A", f.impl);
   const res = await call("discover_companies", { search_query: "q", industries: ["Computer Software"], max_results: 5 });
   assert.equal(res.isError, true);
-  assert.match(res.text, /Unknown LinkedIn industry name\(s\): "Computer Software"/);
+  assert.match(res.text, /Filters differ from the saved search plan \(industries\)/);
   assert.equal(f.apifyCalls().length, 0);
   assert.equal(ctx.usage.candidates, 0);
 });
@@ -433,8 +479,8 @@ test("concurrent runs keep separate contexts and budgets", async () => {
   store.addRun("B", { lead_limit: 1, candidate_limit: 10 });
   const fa = makeFetch();
   const fb = makeFetch();
-  const a = await setup(store, "A", fa.impl);
-  const b = await setup(store, "B", fb.impl);
+  const a = await setup(store, "A", fa.impl, { searchPlan: plan({ search_terms: terms("qa", "qa2", "qa3") }) });
+  const b = await setup(store, "B", fb.impl, { searchPlan: plan({ search_terms: terms("qb", "qb2", "qb3") }) });
 
   // Same company in both runs is fine; each run's own limit applies independently
   const res = await Promise.all([
@@ -481,14 +527,14 @@ test("overall tool-call cap rejects further calls", async () => {
 test("successful tool calls are logged by the application with safe summaries", async () => {
   store.addRun("A");
   const { call } = await setup(store, "A", makeFetch().impl);
-  await call("discover_companies", { search_query: "saas us", max_results: 5 });
+  await call("discover_companies", { search_query: "q1", max_results: 5 });
   await call("scrape_company", { url: "https://acme.com/about?token=abc&email=jane@example.com" });
 
   const [disc, scrape] = store.toolCalls;
   assert.equal(disc.tool_name, "discover_companies");
   assert.equal(disc.status, "success");
   assert.equal(typeof disc.duration_ms, "number");
-  assert.match(disc.input_summary, /query="saas us" location="" company_sizes=\[\] industries=\[\] requested=5 per_call_cap=10 budget_before=0\/20/);
+  assert.match(disc.input_summary, /query="q1" location="" company_sizes=\[\] industries=\[\] requested=5 per_call_cap=10 budget_before=0\/20/);
   assert.match(disc.result_summary, /granted=5 returned=5 kept=5/);
 
   assert.equal(scrape.tool_name, "scrape_company");
@@ -571,4 +617,250 @@ test("SDK options restrict the agent to the five lead tools plus project skills"
   assert.equal(opts.maxTurns, 25);
   assert.ok((opts.maxBudgetUsd ?? 0) > 0);
   assert.deepEqual(Object.keys(opts.mcpServers ?? {}), ["lead-tools"]);
+});
+
+// --- Search plan (saved with the refined ICP) ---
+
+async function savePlanResult(p: Row) {
+  store.addRun("P");
+  const { call } = await setup(store, "P", makeFetch().impl, { searchPlan: false });
+  return call("update_run", { refined_icp: { target_company_type: "B2B SaaS" }, search_plan: p });
+}
+
+test("a valid search plan is saved inside refined_icp, alongside the ICP", async () => {
+  const p = plan({
+    filters: { location: "United States", employee_range: { min: 10, max: 100 }, company_sizes: ["11-50", "51-200"], industries: ["Software Development"] },
+    names_company_type: true,
+    search_terms: terms("logistics", "field service", "payroll"),
+  });
+  const res = await savePlanResult(p);
+  assert.equal(res.isError, false, res.text);
+  const icp = (store.runs.get("P") as Row | undefined)?.refined_icp as Row;
+  assert.equal(icp.target_company_type, "B2B SaaS");
+  assert.deepEqual((icp.search_plan as Row).search_terms, p.search_terms);
+});
+
+test("search plans are rejected for each rule violation, with a clear reason", async () => {
+  const cases: Array<[string, Row, RegExp]> = [
+    ["too few terms", plan({ search_terms: terms("a1", "a2") }), /3-6 terms/],
+    ["too many terms", plan({ search_terms: terms("a1", "a2", "a3", "a4", "a5", "a6", "a7") }), /3-6 terms/],
+    ["3-word term", plan({ search_terms: terms("field service ops", "b", "c") }), /"field service ops" must be 1-2 words/],
+    ["filler word", plan({ search_terms: terms("saas", "logistics", "payroll") }), /filler word\(s\) \(saas\)/],
+    ["filler in 2 words", plan({ search_terms: terms("logistics platform", "b", "c") }), /filler word\(s\) \(platform\)/],
+    ["missing reason", plan({ search_terms: [{ term: "a", reason: "" }, ...terms("b", "c")] }), /"a" needs a short reason/],
+    ["repeated term", plan({ search_terms: terms("logistics", "Logistics", "c") }), /repeated/],
+    ["company type named, no industries", plan({ names_company_type: true }), /filters\.industries is required/],
+    ["unknown industry", plan({ filters: { industries: ["Computer Software"] } }), /Unknown LinkedIn industry "Computer Software"/],
+    ["band outside range", plan({ filters: { employee_range: { min: 10, max: 100 }, company_sizes: ["11-50", "201-500"] } }), /201-500 does not overlap/],
+    ["sizes without range", plan({ filters: { company_sizes: ["11-50"] } }), /company_sizes requires employee_range/],
+    ["range without sizes", plan({ filters: { employee_range: { min: 10, max: 100 } } }), /company_sizes is required/],
+  ];
+  for (const [label, p, expected] of cases) {
+    store = new MemoryStore();
+    const res = await savePlanResult(p);
+    assert.equal(res.isError, true, `${label} should be rejected`);
+    assert.match(res.text, expected, label);
+    assert.equal((store.runs.get("P") as Row | undefined)?.refined_icp, undefined, `${label}: nothing saved`);
+  }
+});
+
+test("discovery is rejected before a search plan is saved", async () => {
+  store.addRun("A");
+  const f = makeFetch();
+  const { call } = await setup(store, "A", f.impl, { searchPlan: false });
+  const res = await call("discover_companies", { search_query: "q", max_results: 5 });
+  assert.equal(res.isError, true);
+  assert.match(res.text, /No search plan saved/);
+  assert.equal(f.apifyCalls().length, 0);
+  assert.match(store.toolCalls.at(-1)?.error_message ?? "", /^plan:/);
+});
+
+test("discovery rejects a search term that is not in the saved plan", async () => {
+  store.addRun("A");
+  const f = makeFetch();
+  const { call } = await setup(store, "A", f.impl);
+  const res = await call("discover_companies", { search_query: "B2B SaaS startup", max_results: 5 });
+  assert.equal(res.isError, true);
+  assert.match(res.text, /"B2B SaaS startup" is not in the saved search plan\. Use one of: "q", "q1"/);
+  assert.equal(f.apifyCalls().length, 0);
+});
+
+test("discovery rejects filters that differ from the saved plan", async () => {
+  store.addRun("A");
+  const f = makeFetch();
+  const { call } = await setup(store, "A", f.impl, {
+    searchPlan: plan({
+      filters: { location: "United States", employee_range: { min: 10, max: 100 }, company_sizes: ["11-50", "51-200"], industries: ["Software Development"] },
+      names_company_type: true,
+      search_terms: terms("logistics", "payroll", "field service"),
+    }),
+  });
+  const base = { search_query: "logistics", location: "United States", company_sizes: ["11-50", "51-200"], industries: ["Software Development"], max_results: 5 };
+  const cases: Array<[string, Row, string]> = [
+    ["location", { location: "Canada" }, "location"],
+    ["no location", { location: undefined }, "location"],
+    ["sizes", { company_sizes: ["11-50"] }, "company_sizes"],
+    ["industries", { industries: ["IT Services and IT Consulting"] }, "industries"],
+    ["no industries", { industries: undefined }, "industries"],
+  ];
+  for (const [label, override, field] of cases) {
+    const res = await call("discover_companies", { ...base, ...override });
+    assert.equal(res.isError, true, label);
+    assert.match(res.text, new RegExp(`Filters differ from the saved search plan \\(${field}\\)`), label);
+  }
+  assert.equal(f.apifyCalls().length, 0);
+  // The exact plan filters, in any order and letter case, are accepted
+  const ok = await call("discover_companies", { ...base, location: "united states", company_sizes: ["51-200", "11-50"] });
+  assert.equal(ok.isError, false, ok.text);
+});
+
+test("the same term cannot be searched twice", async () => {
+  store.addRun("A", { candidate_limit: 40 });
+  const f = makeFetch();
+  const { call } = await setup(store, "A", f.impl);
+  assert.equal((await call("discover_companies", { search_query: "q1", max_results: 2 })).isError, false);
+  const again = await call("discover_companies", { search_query: " Q1 ", max_results: 2 });
+  assert.equal(again.isError, true);
+  assert.match(again.text, /already searched/);
+  assert.equal(f.apifyCalls().length, 1);
+});
+
+test(`at most ${MAX_DISCOVERY_CALLS_PER_RUN} discovery calls per run`, async () => {
+  store.addRun("A", { candidate_limit: 40 });
+  const f = makeFetch();
+  const { call } = await setup(store, "A", f.impl);
+  for (const t of ["q", "q1", "q2", "q3"]) {
+    assert.equal((await call("discover_companies", { search_query: t, max_results: 1 })).isError, false, t);
+  }
+  const fifth = await call("discover_companies", { search_query: "q4", max_results: 1 });
+  assert.equal(fifth.isError, true);
+  assert.match(fifth.text, /Discovery call limit reached \(4 per run\)/);
+  assert.equal(f.apifyCalls().length, 4);
+});
+
+test("a failed request frees its term for a retry but still counts toward the call limit", async () => {
+  store.addRun("A", { candidate_limit: 40 });
+  const { ctx, call } = await setup(store, "A", makeFetch({ apifyStatus: 503 }).impl);
+  await call("discover_companies", { search_query: "q", max_results: 1 });
+  assert.equal(ctx.usage.discoveryCalls, 1);
+  assert.equal(ctx.searchedTerms.has("q"), false);
+});
+
+test("the LinkedIn total match count is returned to the agent and logged", async () => {
+  store.addRun("A", { candidate_limit: 20 });
+  const { call } = await setup(store, "A", makeFetch({ totalMatches: 1160 }).impl);
+  const out = JSON.parse((await call("discover_companies", { search_query: "q", max_results: 3 })).text);
+  assert.equal(out.linkedin_total_matches, 1160);
+  assert.match(store.toolCalls.at(-1)?.result_summary ?? "", /^linkedin_total_matches=1160 granted=3/);
+
+  store.addRun("B", { candidate_limit: 20 });
+  const empty = await setup(store, "B", makeFetch({ returnCount: () => 0 }).impl);
+  const none = JSON.parse((await empty.call("discover_companies", { search_query: "q", max_results: 3 })).text);
+  assert.equal(none.linkedin_total_matches, 0);
+});
+
+test("the search plan is fixed once discovery starts; later ICP saves keep it", async () => {
+  store.addRun("A", { candidate_limit: 20 });
+  const { call } = await setup(store, "A", makeFetch().impl);
+  const before = await call("update_run", { refined_icp: { industries: ["updated"] } });
+  assert.equal(before.isError, false);
+  assert.ok((((store.runs.get("A") as Row | undefined)?.refined_icp as Row).search_plan as Row).search_terms, "an ICP re-save keeps the plan");
+
+  await call("discover_companies", { search_query: "q", max_results: 1 });
+  const change = await call("update_run", { search_plan: plan({ search_terms: terms("x1", "x2", "x3") }) });
+  assert.equal(change.isError, true);
+  assert.match(change.text, /fixed once discovery has started/);
+});
+
+// --- save_lead: size band and outreach ---
+
+async function setupWithBands() {
+  store.addRun("A", { candidate_limit: 20, lead_limit: 3 });
+  const f = makeFetch({
+    returnCount: () => 0,
+    extraResults: [
+      { name: "Straddle Co", website: "https://straddle.io", linkedinUrl: "https://www.linkedin.com/company/straddle", employeeCountRange: { start: 51, end: 200 } },
+      { name: "Fits Co", website: "https://fits.io", linkedinUrl: "https://www.linkedin.com/company/fits", employeeCountRange: { start: 11, end: 50 } },
+      { name: "Tiny Co", website: "https://tiny.io", employeeCountRange: { start: 2, end: 10 } },
+    ],
+  });
+  const s = await setup(store, "A", f.impl, {
+    searchPlan: plan({
+      filters: { location: "United States", employee_range: { min: 10, max: 100 }, company_sizes: ["1-10", "11-50", "51-200"], industries: ["Software Development"] },
+      names_company_type: true,
+      search_terms: terms("logistics", "payroll", "field service"),
+    }),
+  });
+  const res = await s.call("discover_companies", {
+    search_query: "logistics",
+    location: "United States",
+    company_sizes: ["1-10", "11-50", "51-200"],
+    industries: ["Software Development"],
+    max_results: 10,
+  });
+  assert.equal(res.isError, false, res.text);
+  return s;
+}
+
+test("a qualified lead whose size band extends beyond the employee range is saved as needs_review", async () => {
+  const { ctx, call } = await setupWithBands();
+  const res = await call("save_lead", lead("Straddle Co", "straddle.io"));
+  assert.equal(res.isError, false, res.text);
+  assert.match(res.text, /Saved as needs_review instead of qualified: LinkedIn size band 51-200 extends beyond the objective's 10-100 employee range/);
+
+  const saved = store.leads.find((l) => l.company_domain === "straddle.io")!;
+  assert.equal(saved.qualification_status, "needs_review");
+  assert.match(String((saved.concerns as string[])[0]), /51-200 extends beyond/);
+  assert.equal(store.outreach.length, 0, "needs_review leads store no outreach");
+  assert.equal(ctx.usage.qualified, 0, "does not count toward the qualified target");
+  assert.match(store.toolCalls.at(-1)?.result_summary ?? "", /downgraded from qualified: size band/);
+
+  // A band below the range is also beyond it
+  assert.match((await call("save_lead", lead("Tiny Co", "tiny.io"))).text, /2-10 extends beyond/);
+});
+
+test("the size band is also found through the lead's LinkedIn URL", async () => {
+  const { call } = await setupWithBands();
+  const res = await call("save_lead", {
+    ...lead("Straddle Co", "straddle-other-domain.io"),
+    source_urls: ["https://www.linkedin.com/company/straddle"],
+  });
+  assert.match(res.text, /51-200 extends beyond/);
+});
+
+test("a qualified lead whose size band is within the range stays qualified", async () => {
+  const { ctx, call } = await setupWithBands();
+  const res = await call("save_lead", lead("Fits Co", "fits.io"));
+  assert.equal(res.isError, false, res.text);
+  assert.equal(store.leads.find((l) => l.company_domain === "fits.io")?.qualification_status, "qualified");
+  assert.equal(ctx.usage.qualified, 1);
+  assert.equal(store.outreach.length, 1);
+});
+
+test("a qualified lead without a LinkedIn message is rejected; the corrected retry saves exactly one lead", async () => {
+  store.addRun("A");
+  const { call } = await setup(store, "A", makeFetch().impl);
+  const noLinkedin: Row = { ...OUTREACH };
+  delete noLinkedin.linkedin_message;
+
+  const missing = await call("save_lead", { ...lead("Acme", "acme.com"), outreach: noLinkedin });
+  assert.equal(missing.isError, true);
+  assert.match(missing.text, /outreach\.linkedin_message are required\. Nothing was saved/);
+  const blank = await call("save_lead", { ...lead("Acme", "acme.com"), outreach: { ...OUTREACH, linkedin_message: "   " } });
+  assert.equal(blank.isError, true);
+  const noOutreach = await call("save_lead", { ...lead("Acme", "acme.com"), outreach: undefined });
+  assert.equal(noOutreach.isError, true);
+  assert.equal(store.leads.length, 0);
+
+  const retry = await call("save_lead", lead("Acme", "acme.com"));
+  assert.equal(retry.isError, false, retry.text);
+  assert.equal(store.leads.length, 1);
+  assert.equal(store.outreach[0].linkedin_message, "Short LinkedIn note");
+});
+
+test("needs_review leads do not need outreach", async () => {
+  store.addRun("A");
+  const { call } = await setup(store, "A", makeFetch().impl);
+  const res = await call("save_lead", { ...lead("Maybe Co", "maybe.io", "needs_review"), outreach: undefined });
+  assert.equal(res.isError, false, res.text);
 });
