@@ -99,12 +99,14 @@ const updateRun = tool(
 );
 
 // --- Tool: discover_companies ---
+// linkedin.com and wikipedia.org are deliberately allowed: they can hold useful company info.
+// "gov" and "edu" match any hostname ending in .gov / .edu via the endsWith check below.
 const DOMAIN_DENYLIST = [
-  'facebook.com', 'instagram.com', 'twitter.com', 'x.com', 'linkedin.com',
+  'facebook.com', 'instagram.com', 'twitter.com', 'x.com',
   'youtube.com', 'tiktok.com', 'reddit.com', 'pinterest.com',
   'indeed.com', 'glassdoor.com', 'ziprecruiter.com', 'monster.com',
   'craigslist.org', 'yelp.com', 'bbb.org',
-  'wikipedia.org', 'amazon.com', 'ebay.com',
+  'amazon.com', 'ebay.com',
   'gov', 'edu'
 ];
 
