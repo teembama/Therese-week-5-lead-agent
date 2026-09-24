@@ -525,6 +525,12 @@ function parseBand(band: string | null | undefined): { start: number; end: numbe
 // use the plan's terms and filters, so discovery cannot drift from the user's objective.
 
 export const MAX_DISCOVERY_CALLS_PER_RUN = 4;
+
+// At most half the run's candidate budget per call (min 1, max 20), so a poor first
+// search leaves room for another. Shared by the tool and the run prompt.
+export function perCallCapFor(candidateLimit: number): number {
+  return Math.min(MAX_RESULTS_PER_DISCOVERY_CALL, Math.max(1, Math.ceil(candidateLimit / 2)));
+}
 const SEARCH_TERM_FILLER = new Set([
   "b2b", "saas", "startup", "startups", "company", "companies", "platform", "platforms", "software",
 ]);
@@ -731,8 +737,7 @@ export function createRunTools(ctx: RunContext) {
     },
     async (args) => {
       const limit = ctx.limits.candidateLimit;
-      // At most half the run's budget per call, so a poor first query leaves room for another
-      const perCallCap = Math.max(1, Math.ceil(limit / 2));
+      const perCallCap = perCallCapFor(limit);
       const sizes = args.company_sizes?.length ? args.company_sizes : undefined;
       const inputSummary = `query="${clip(args.search_query, 150)}" location="${clip(args.location ?? "", 60)}" company_sizes=[${sizes?.join(",") ?? ""}] industries=[${clip((args.industries ?? []).join(","), 150)}] requested=${args.max_results} per_call_cap=${perCallCap} budget_before=${ctx.usage.candidates}/${limit}`;
 
@@ -1003,7 +1008,7 @@ export function createRunTools(ctx: RunContext) {
 
   const saveLead = tool(
     "save_lead",
-    "Save a qualified or needs_review lead with qualification data, source evidence, and outreach drafts (outreach for qualified leads only). The tool enforces the run's qualified-lead limit and rejects duplicate companies (same domain, or same name when no domain is given).",
+    "Save a qualified or needs_review lead with qualification data, source evidence, and outreach drafts (outreach for qualified leads only). A qualified lead requires at least one source record and the full outreach including linkedin_message. The tool enforces the run's qualified-lead limit and rejects duplicate companies (same domain, or same name when no domain is given).",
     {
       company_name: z.string(),
       company_domain: z.string().optional(),
@@ -1042,7 +1047,7 @@ export function createRunTools(ctx: RunContext) {
     async (args) => {
       const domain = normalizeDomain(args.company_domain);
       const hasLinkedinMessage = !!args.outreach?.linkedin_message?.trim();
-      const inputSummary = `company="${clip(args.company_name, 100)}" domain=${domain ?? "none"} status=${args.qualification_status} confidence=${args.confidence} sources=${args.sources?.length ?? 0} outreach=${args.outreach ? "yes" : "no"} linkedin_message=${hasLinkedinMessage ? "yes" : "no"}`;
+      const inputSummary = `company="${clip(args.company_name, 100)}" domain=${domain ?? "none"} status=${args.qualification_status} confidence=${args.confidence} sources=${(args.sources ?? []).length} outreach=${args.outreach ? "yes" : "no"} linkedin_message=${hasLinkedinMessage ? "yes" : "no"}`;
 
       return audited(ctx, "save_lead", inputSummary, async () => {
         if (await runStopped(ctx)) return STOPPED;
@@ -1073,6 +1078,17 @@ export function createRunTools(ctx: RunContext) {
           }
         }
         const isQualified = status === "qualified";
+
+        // Outreach claims must trace to source evidence. The tool cannot verify each claim, but a
+        // qualified lead with no source records has nothing to trace to, so it is rejected
+        // (before anything is written, so a corrected retry cannot create a duplicate).
+        const sourceCount = (args.sources ?? []).filter((s) => s.url?.trim()).length;
+        if (isQualified && sourceCount === 0) {
+          return reject(
+            `${args.company_name} is qualified but has no source records. Every claim in its outreach must trace to retrieved evidence; include the sources (url plus relevant_evidence) and save again. Nothing was saved.`,
+            "validation"
+          );
+        }
 
         // Qualified leads need the full outreach pack, including the LinkedIn message. Rejected
         // before anything is reserved or written, so a corrected retry cannot create a duplicate.
@@ -1231,6 +1247,7 @@ const SYSTEM_PROMPT = `You are Koya Lead Studio — an AI lead research and outr
    Search plan search_terms: 3-6 terms, each 1-2 words, each with a short reason explaining how it follows from the objective's meaning.
    - Search terms help FIND companies. They never add new requirements; the user's objective alone decides who qualifies.
    - If the objective names a niche, every term must stay within that niche.
+   - Choose specific product niches (e.g. scheduling, invoicing, onboarding, helpdesk, payroll), not broad technology categories (e.g. cloud services, data analytics, business intelligence). Broad categories match companies named after the category, which are usually consultancies and resellers, not SaaS product companies.
    - No filler words (B2B, SaaS, startup, company, platform, software); the filters already cover those.
 
 2. DISCOVER candidate companies.
@@ -1238,6 +1255,7 @@ const SYSTEM_PROMPT = `You are Koya Lead Studio — an AI lead research and outr
    Use discover_companies with one search term from the saved plan per call and exactly the plan's filters (location, company_sizes, industries). The tool rejects anything else.
 
    - At most 4 discovery calls per run, each with a different term. Each response reports linkedin_total_matches: a term with few matches is exhausted, a term with many has more candidates than one call returns.
+   - Always request the per-call cap (per_call_cap, given in the run limits) as max_results, never less. It is a cap, not a target: fewer results only means fewer candidates to evaluate. You can stop researching early once you have enough qualified leads.
    - A candidate is an operating company with its own first-party website. Use the returned domain field to deduplicate. The same company must never be researched or saved twice.
    - LinkedIn profile fields (employeeCountRange, location, industries) are acceptable evidence for those criteria; cite the linkedinUrl as the source. They are self-reported size bands, so a band that straddles a hard filter (e.g. 51-200 against a 10-100 limit) is needs_review, not qualified. Descriptions alone do not establish the business problem.
 
@@ -1297,6 +1315,8 @@ const SYSTEM_PROMPT = `You are Koya Lead Studio — an AI lead research and outr
    - Avoid unsupported personalization.
    - Never contain personal email addresses.
 
+   Every factual claim in outreach must appear in the lead's source evidence. Do not infer, extrapolate, or guess details about what a company does beyond what was retrieved.
+
    Outreach is DRAFT ONLY.
 
    Never send emails, LinkedIn messages, or other external communications.
@@ -1305,7 +1325,7 @@ const SYSTEM_PROMPT = `You are Koya Lead Studio — an AI lead research and outr
 
    Never save more qualified leads than the lead target. save_lead rejects qualified leads past the target and rejects companies already saved in this run.
 
-   A qualified lead must include the full outreach (3 emails and outreach.linkedin_message); save_lead rejects it otherwise and saves nothing, so correct it and save again. save_lead saves a qualified lead as needs_review when its LinkedIn size band extends beyond the objective's employee range, and says so in its response.
+   A qualified lead must include at least one source record (sources) and the full outreach (3 emails and outreach.linkedin_message); save_lead rejects it otherwise and saves nothing, so correct it and save again. save_lead saves a qualified lead as needs_review when its LinkedIn size band extends beyond the objective's employee range, and says so in its response.
 
    Stop searching and qualifying once the required number of qualified leads has been reached.
 
@@ -1463,12 +1483,13 @@ const STOP_MESSAGES: Record<string, string> = {
 const GENERIC_FAILURE =
   "The research stopped because of an internal error. Any leads found so far are saved. Please try again.";
 
-function buildRunPrompt(ctx: RunContext): string {
+export function buildRunPrompt(ctx: RunContext): string {
   return `Qualification objective: ${ctx.objective}
 
 Limits for this run (enforced by the tools; a tool rejects any call past its limit):
 - Final qualified leads target: ${ctx.limits.leadLimit}
-- Candidate discovery budget (candidate_limit): ${ctx.limits.candidateLimit} results total across all discover_companies calls (max ${MAX_RESULTS_PER_DISCOVERY_CALL} per call)
+- Candidate discovery budget (candidate_limit): ${ctx.limits.candidateLimit} results total across all discover_companies calls
+- Per-call cap (per_call_cap): ${perCallCapFor(ctx.limits.candidateLimit)} — request exactly this as max_results on every discover_companies call
 - Website scrape limit: ${ctx.limits.scrapeLimit}
 - Agent turns: ${ctx.limits.agentTurnLimit} — batch independent tool calls (for example several scrapes) in the same turn
 

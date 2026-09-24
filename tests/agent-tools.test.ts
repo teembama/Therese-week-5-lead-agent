@@ -10,6 +10,8 @@ import {
   AGENT_SKILLS,
   LEAD_TOOL_NAMES,
   MAX_DISCOVERY_CALLS_PER_RUN,
+  buildRunPrompt,
+  perCallCapFor,
   type RunContext,
   type RunRecord,
   type RunStore,
@@ -195,6 +197,7 @@ function lead(name: string, domain: string, status = "qualified"): Row {
     concerns: [],
     source_urls: [`https://${domain}`],
     source_summary: "summary",
+    sources: [{ url: `https://${domain}`, source_type: "website", relevant_evidence: "What the company does" }],
     outreach: OUTREACH,
   };
 }
@@ -863,4 +866,82 @@ test("needs_review leads do not need outreach", async () => {
   const { call } = await setup(store, "A", makeFetch().impl);
   const res = await call("save_lead", { ...lead("Maybe Co", "maybe.io", "needs_review"), outreach: undefined });
   assert.equal(res.isError, false, res.text);
+});
+
+// --- Search-term guidance, full per-call requests, and source-backed outreach ---
+
+async function systemPrompt(): Promise<string> {
+  store.addRun("S");
+  const ctx = (await createRunContext("S", store, makeFetch().impl))!;
+  const server = createSdkMcpServer({ name: "lead-tools", version: "1.0.0", tools: createRunTools(ctx) });
+  return String(buildQueryOptions(ctx, server).systemPrompt);
+}
+
+test("the system prompt tells the agent to pick product niches, not broad technology categories", async () => {
+  const prompt = await systemPrompt();
+  assert.match(prompt, /Choose specific product niches \(e\.g\. scheduling, invoicing, onboarding, helpdesk, payroll\), not broad technology categories \(e\.g\. cloud services, data analytics, business intelligence\)/);
+  assert.match(prompt, /Broad categories match companies named after the category, which are usually consultancies and resellers, not SaaS product companies\./);
+});
+
+test("the system prompt tells the agent to always request the per-call cap", async () => {
+  const prompt = await systemPrompt();
+  assert.match(prompt, /Always request the per-call cap \(per_call_cap, given in the run limits\) as max_results, never less\. It is a cap, not a target/);
+  assert.match(prompt, /You can stop researching early once you have enough qualified leads\./);
+});
+
+test("the system prompt requires every outreach claim to appear in the source evidence", async () => {
+  const prompt = await systemPrompt();
+  assert.ok(
+    prompt.includes(
+      "Every factual claim in outreach must appear in the lead's source evidence. Do not infer, extrapolate, or guess details about what a company does beyond what was retrieved."
+    )
+  );
+});
+
+test("the run prompt gives the exact per-call cap, matching what the tool enforces", async () => {
+  for (const [candidateLimit, cap] of [[12, 6], [20, 10], [40, 20], [1, 1]] as const) {
+    store = new MemoryStore();
+    store.addRun("A", { candidate_limit: candidateLimit });
+    const f = makeFetch();
+    const { ctx, call } = await setup(store, "A", f.impl);
+    assert.equal(perCallCapFor(candidateLimit), cap);
+    assert.match(buildRunPrompt(ctx), new RegExp(`Per-call cap \\(per_call_cap\\): ${cap} — request exactly this as max_results`));
+    const out = JSON.parse((await call("discover_companies", { search_query: "q", max_results: 20 })).text);
+    assert.equal(out.per_call_cap, cap, `tool reports the same cap for budget ${candidateLimit}`);
+    assert.equal(f.apifyCalls()[0].body.maxItems, cap);
+  }
+});
+
+test("a qualified lead with no source records is rejected; the corrected retry saves exactly one lead", async () => {
+  store.addRun("A");
+  const { ctx, call } = await setup(store, "A", makeFetch().impl);
+  for (const [label, sources] of [
+    ["missing", undefined],
+    ["empty", []],
+    ["blank url", [{ url: "   ", relevant_evidence: "x" }]],
+  ] as const) {
+    const res = await call("save_lead", { ...lead("Acme", "acme.com"), sources });
+    assert.equal(res.isError, true, label);
+    assert.match(res.text, /qualified but has no source records\. Every claim in its outreach must trace to retrieved evidence/, label);
+    assert.match(store.toolCalls.at(-1)?.error_message ?? "", /^validation:/, label);
+  }
+  assert.equal(store.leads.length, 0, "nothing was saved");
+  assert.equal(ctx.usage.qualified, 0, "no qualified slot was reserved");
+
+  const retry = await call("save_lead", lead("Acme", "acme.com"));
+  assert.equal(retry.isError, false, retry.text);
+  assert.equal(store.leads.length, 1);
+  assert.equal(store.sources.length, 1);
+});
+
+test("needs_review leads (including size-band downgrades) do not need source records", async () => {
+  store.addRun("A");
+  const { call } = await setup(store, "A", makeFetch().impl);
+  const res = await call("save_lead", { ...lead("Maybe Co", "maybe.io", "needs_review"), sources: undefined, outreach: undefined });
+  assert.equal(res.isError, false, res.text);
+
+  const bands = await setupWithBands();
+  const downgraded = await bands.call("save_lead", { ...lead("Straddle Co", "straddle.io"), sources: [] });
+  assert.equal(downgraded.isError, false, downgraded.text);
+  assert.match(downgraded.text, /Saved as needs_review instead of qualified/);
 });
