@@ -501,15 +501,39 @@ test("concurrent runs keep separate contexts and budgets", async () => {
 
 // --- Cancellation ---
 
-test("tools stop and log when the run is no longer running", async () => {
+test("every tool stops, does no work, and logs 'cancelled' once the user cancels the run", async () => {
   store.addRun("A");
   const f = makeFetch();
   const { call } = await setup(store, "A", f.impl);
-  store.runs.get("A")!.status = "failed"; // cancelled by the user
+  store.runs.get("A")!.status = "cancelled";
+
+  const calls: Array<[string, Row]> = [
+    ["discover_companies", { search_query: "q", max_results: 5 }],
+    ["scrape_company", { url: "https://acme.com" }],
+    ["save_lead", lead("Acme", "acme.com")],
+    ["update_run", { status: "completed", error: "done" }],
+  ];
+  for (const [name, args] of calls) {
+    const res = await call(name, args);
+    assert.equal(res.isError, true, name);
+    assert.match(res.text, /The user cancelled this run\. Stop now/, name);
+    assert.match(store.toolCalls.at(-1)?.error_message ?? "", /^cancelled:/, name);
+  }
+  assert.equal(f.calls.length, 0, "no Apify or Firecrawl request");
+  assert.equal(store.leads.length, 0, "nothing saved");
+  assert.equal(store.runs.get("A")?.status, "cancelled", "the agent cannot revive or overwrite a cancelled run");
+});
+
+test("tools stop with a 'stopped' reason when the run finished rather than being cancelled", async () => {
+  store.addRun("A");
+  const f = makeFetch();
+  const { call } = await setup(store, "A", f.impl);
+  store.runs.get("A")!.status = "completed";
   const res = await call("discover_companies", { search_query: "q", max_results: 5 });
   assert.equal(res.isError, true);
+  assert.match(res.text, /no longer running \(completed\)/);
+  assert.match(store.toolCalls.at(-1)?.error_message ?? "", /^stopped:/);
   assert.equal(f.calls.length, 0);
-  assert.equal(store.toolCalls.at(-1)?.error_message?.startsWith("cancelled:"), true);
 });
 
 // --- Tool-call cap ---

@@ -320,11 +320,17 @@ async function audited(
   };
 }
 
-async function runStopped(ctx: RunContext): Promise<boolean> {
-  return (await ctx.store.getRunStatus(ctx.runId)) !== "running";
+// Tools do no work once the run has left "running" (cancelled by the user, or finished)
+function stoppedOutcome(status: string | null): Outcome {
+  return status === "cancelled"
+    ? reject("The user cancelled this run. Stop now: do not call any more tools.", "cancelled")
+    : reject(`Run is no longer running (${status ?? "unknown"}). Stop now.`, "stopped");
 }
 
-const STOPPED = reject("Run is no longer running (cancelled or finished). Stop now.", "cancelled");
+async function runStopped(ctx: RunContext): Promise<Outcome | null> {
+  const status = await ctx.store.getRunStatus(ctx.runId);
+  return status === "running" ? null : stoppedOutcome(status);
+}
 
 // linkedin.com and wikipedia.org are deliberately allowed: they can hold useful company info.
 // "gov" and "edu" match any hostname ending in .gov / .edu via the endsWith check below.
@@ -717,7 +723,7 @@ export function createRunTools(ctx: RunContext) {
 
         // Conditional write: a cancelled or finished run is never revived or overwritten
         const result = await ctx.store.updateRunIfRunning(ctx.runId, updates);
-        if (result === "not_running") return STOPPED;
+        if (result === "not_running") return stoppedOutcome(await ctx.store.getRunStatus(ctx.runId));
         if (args.refined_icp) ctx.refinedIcp = args.refined_icp;
         if (saved) ctx.searchPlan = saved;
         return { text: saved ? "Run updated; search plan saved." : "Run updated.", summary: `updated ${parts.join(" ")}` };
@@ -742,7 +748,8 @@ export function createRunTools(ctx: RunContext) {
       const inputSummary = `query="${clip(args.search_query, 150)}" location="${clip(args.location ?? "", 60)}" company_sizes=[${sizes?.join(",") ?? ""}] industries=[${clip((args.industries ?? []).join(","), 150)}] requested=${args.max_results} per_call_cap=${perCallCap} budget_before=${ctx.usage.candidates}/${limit}`;
 
       return audited(ctx, "discover_companies", inputSummary, async () => {
-        if (await runStopped(ctx)) return STOPPED;
+        const stopped = await runStopped(ctx);
+        if (stopped) return stopped;
 
         const apiToken = process.env.APIFY_API_TOKEN;
         if (!apiToken) return reject("Company discovery is not configured.", "config");
@@ -940,7 +947,8 @@ export function createRunTools(ctx: RunContext) {
       const inputSummary = `url=${safeUrl(args.url)} attempt=${attempt} scrapes_before=${ctx.usage.scrapes}/${limit}`;
 
       return audited(ctx, "scrape_company", inputSummary, async () => {
-        if (await runStopped(ctx)) return STOPPED;
+        const stopped = await runStopped(ctx);
+        if (stopped) return stopped;
 
         const apiKey = process.env.FIRECRAWL_API_KEY;
         if (!apiKey) return reject("Website research is not configured.", "config");
@@ -1050,7 +1058,8 @@ export function createRunTools(ctx: RunContext) {
       const inputSummary = `company="${clip(args.company_name, 100)}" domain=${domain ?? "none"} status=${args.qualification_status} confidence=${args.confidence} sources=${(args.sources ?? []).length} outreach=${args.outreach ? "yes" : "no"} linkedin_message=${hasLinkedinMessage ? "yes" : "no"}`;
 
       return audited(ctx, "save_lead", inputSummary, async () => {
-        if (await runStopped(ctx)) return STOPPED;
+        const stopped = await runStopped(ctx);
+        if (stopped) return stopped;
 
         if (!args.company_name.trim()) {
           return reject("company_name is required and cannot be empty.", "validation");

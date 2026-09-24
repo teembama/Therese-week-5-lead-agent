@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { statusBadgeClass } from "@/lib/run-status";
 
 interface SessionUser {
   id: string;
@@ -192,15 +193,7 @@ export default function Home() {
               >
                 <div className="flex justify-between items-start">
                   <p className="text-sm font-medium truncate pr-4">{run.objective}</p>
-                  <span
-                    className={`text-xs px-2 py-1 rounded-full whitespace-nowrap ${
-                      run.status === "completed"
-                        ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
-                        : run.status === "failed"
-                        ? "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400"
-                        : "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400"
-                    }`}
-                  >
+                  <span className={`text-xs px-2 py-1 rounded-full whitespace-nowrap ${statusBadgeClass(run.status)}`}>
                     {run.status}
                   </span>
                 </div>

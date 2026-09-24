@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { getSession } from "@/lib/auth";
+import { cancelRun } from "@/lib/cancel-run";
 
 export async function GET(
   _req: NextRequest,
@@ -67,7 +68,7 @@ export async function GET(
   });
 }
 
-// PATCH /api/runs/[id] — cancel a run
+// PATCH /api/runs/[id] — cancel a run. Body: { status: "cancelled" }.
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -86,25 +87,46 @@ export async function PATCH(
     return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
   }
 
-  const { status, error: errorMsg } = body;
-
-  if (status !== "failed") {
-    return NextResponse.json({ error: "Can only cancel a run (set status to failed)." }, { status: 400 });
+  if (body.status !== "cancelled") {
+    return NextResponse.json({ error: 'Only cancellation is supported: send { "status": "cancelled" }.' }, { status: 400 });
   }
 
-  const { error } = await supabase
-    .from("lead_runs")
-    .update({
-      status: "failed",
-      error: (errorMsg as string) || "Cancelled by user",
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", id)
-    .eq("status", "running");
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  try {
+    const result = await cancelRun(
+      {
+        async getRun(runId) {
+          const { data } = await supabase.from("lead_runs").select("status, user_id").eq("id", runId).maybeSingle();
+          return data;
+        },
+        async setStatusIfRunning(runId, status, message) {
+          const { data, error } = await supabase
+            .from("lead_runs")
+            .update({ status, error: message, updated_at: new Date().toISOString() })
+            .eq("id", runId)
+            .eq("status", "running")
+            .select("id");
+          if (error?.code === "23514") return "constraint"; // check_violation
+          if (error) throw new Error(error.message);
+          return data && data.length > 0 ? "updated" : "not_running";
+        },
+        async logCancellation(runId, detail) {
+          const { error } = await supabase.from("agent_tool_calls").insert({
+            run_id: runId,
+            tool_name: "manual_cancel",
+            purpose: "User cancelled the run",
+            input_summary: "",
+            result_summary: detail,
+            status: "success",
+          });
+          if (error) throw new Error(error.message);
+        },
+      },
+      id,
+      user
+    );
+    return NextResponse.json(result.body, { status: result.httpStatus });
+  } catch (err) {
+    console.error(`Cancel failed for run ${id}:`, err);
+    return NextResponse.json({ error: "Could not cancel the run. Please try again." }, { status: 500 });
   }
-
-  return NextResponse.json({ status: "cancelled" });
 }

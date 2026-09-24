@@ -66,7 +66,7 @@ Claude Agent SDK (query())
 ## Database Schema (5 tables)
 
 **lead_runs** — One record per research run
-- id, user_id, objective, refined_icp (JSON), lead_limit, candidate_limit, scrape_limit, agent_turn_limit, status (running/completed/failed), error, estimated_cost, actual_cost, created_at, updated_at
+- id, user_id, objective, refined_icp (JSON), lead_limit, candidate_limit, scrape_limit, agent_turn_limit, status (running/completed/failed/cancelled — see supabase/migrations/20260924230000_add_cancelled_run_status.sql), error, estimated_cost, actual_cost, created_at, updated_at
 
 **leads** — One record per evaluated company
 - id, run_id (FK), company_name, company_domain, qualification_status (qualified/not_qualified/needs_review), confidence (0-1), fit_reasons (JSON array), concerns (JSON array), source_urls (JSON array), source_summary, created_at, updated_at
@@ -96,7 +96,7 @@ All tables have RLS enabled. Server-side access uses the Supabase service role k
 Saves the refined ICP, the final status (`completed`/`failed` only) and a user-facing message. Writes only while the run is still `running`, so a cancelled run is never revived. Cost is recorded by the runtime from the SDK result, not by the model.
 
 ### discover_companies
-Calls the Apify Google Search actor (token in the `Authorization` header). Enforces the **total candidate budget**: each call is granted `min(requested, 20, remaining budget)`, results actually returned count against the budget (unreturned and failed requests are refunded), and calls are rejected once it is used. Drops denylisted non-company domains (social, job boards, directories/review sites, contact-data vendors, gov/edu) and domains already returned in the run.
+Calls the Apify LinkedIn company search actor `harvestapi/linkedin-company-search` (token in the `Authorization` header), using only the terms and filters of the run's saved search plan. Enforces the **total candidate budget**: each call is granted `min(requested, 20, remaining budget)`, results actually returned count against the budget (unreturned and failed requests are refunded), and calls are rejected once it is used. Drops denylisted non-company domains (social, job boards, directories/review sites, contact-data vendors, gov/edu) and domains already returned in the run.
 
 **Search strategy:** the system prompt directs the agent to run several short, focused queries (2–4 ICP terms each, e.g. industry + geography) instead of one query containing every criterion, to change angle when a query returns mostly junk, and to verify criteria search engines can't filter (e.g. headcount) during research.
 
@@ -153,7 +153,7 @@ If Claude validation API fails: returns 503 "temporarily unavailable" (never sil
 - Past runs list with status badges
 
 ### Run Detail Page (runs/[id]/page.tsx)
-- Run status badge + cancel button (while running)
+- Run status badge (running / completed / failed / cancelled) + cancel button (while running; shown to the run's owner and admins)
 - User-facing error messages (concise, non-technical)
 - 4-step progress tracker: Refine ICP → Discover → Research → Outreach
 - Contextual status messages under tracker
@@ -176,7 +176,7 @@ If Claude validation API fails: returns 503 "temporarily unavailable" (never sil
 - POST /api/runs — create run + start agent in background
 - GET /api/runs — list all runs
 - GET /api/runs/[id] — run detail with leads and tool calls
-- PATCH /api/runs/[id] — cancel a run
+- PATCH /api/runs/[id] — cancel a run (`{ "status": "cancelled" }`). Owner or admin only. Sets `cancelled` only while the run is `running`, so a finished run is never overwritten; repeating it is a no-op (200); cancelling a finished run returns 409. Logged as `manual_cancel`. Cancellation is cooperative: every tool rejects work once the run is not `running`, so the agent stops at its next tool call and the run's cost is still recorded. Until the migration is applied, the database rejects `cancelled`; the endpoint then stores `failed` with the cancellation message so the run still stops.
 
 ---
 
@@ -203,6 +203,6 @@ If Claude validation API fails: returns 503 "temporarily unavailable" (never sil
 5. No stale-run detection — if server crashes during a run, status stays "running" indefinitely
 6. Candidate discovery returns irrelevant results (job boards, social media, government sites) — needs domain denylist filtering
 7. 4000-char Firecrawl truncation can miss important evidence later on the page
-8. Cancellation sets DB status to failed but does not cooperatively stop the running agent
+8. Cancellation is cooperative: the model turn in progress when the user cancels still completes (and is billed) before the next tool call stops it
 9. No idempotency protection on POST /api/runs — double-click could create duplicate runs
 10. Zero qualified leads marks run as "failed" even when the workflow completed successfully (should be "completed" with shortfall message)

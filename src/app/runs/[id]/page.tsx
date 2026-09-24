@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { statusBadgeClass } from "@/lib/run-status";
 
 interface LeadSource {
   id: string;
@@ -63,6 +64,7 @@ interface RunData {
     created_at: string;
     actual_cost: number | null;
     lead_limit: number;
+    user_id: string | null;
   };
   leads: Lead[];
   toolCalls: ToolCall[];
@@ -121,6 +123,8 @@ function getStepStatus(
     statusMessage = `Complete — ${qualifiedCount} qualified lead${qualifiedCount !== 1 ? "s" : ""} found.`;
   } else if (runStatus === "failed") {
     statusMessage = "Run failed.";
+  } else if (runStatus === "cancelled") {
+    statusMessage = "Run cancelled.";
   }
 
   return { completed, statusMessage };
@@ -149,6 +153,8 @@ function ProgressTracker({
           const done = completed[step.key];
           const active = i === activeIndex && runStatus === "running";
           const failed = runStatus === "failed" && i === activeIndex;
+          // The step the run was on when the user cancelled it
+          const stoppedHere = runStatus === "cancelled" && i === activeIndex;
 
           return (
             <div key={step.key} className="flex items-center flex-1 last:flex-none">
@@ -159,12 +165,15 @@ function ProgressTracker({
                       ? "bg-green-500 border-green-500 text-white"
                       : failed
                       ? "bg-red-500 border-red-500 text-white"
+                      : stoppedHere
+                      ? "bg-gray-400 border-gray-400 text-white dark:bg-gray-600 dark:border-gray-600"
                       : active
                       ? "border-blue-500 text-blue-500 animate-pulse"
                       : "border-gray-300 text-gray-400 dark:border-gray-600"
                   }`}
+                  aria-label={stoppedHere ? `${step.label}: cancelled` : undefined}
                 >
-                  {done ? "✓" : failed ? "✕" : i + 1}
+                  {done ? "✓" : failed ? "✕" : stoppedHere ? "■" : i + 1}
                 </div>
                 <span
                   className={`text-xs mt-1.5 ${
@@ -197,6 +206,8 @@ function ProgressTracker({
               ? "text-red-500"
               : runStatus === "completed"
               ? "text-green-600 dark:text-green-400"
+              : runStatus === "cancelled"
+              ? "text-gray-500"
               : "text-gray-500 animate-pulse"
           }`}
         >
@@ -486,7 +497,9 @@ export default function RunPage() {
   const [activeTab, setActiveTab] = useState<"leads" | "tools">("leads");
   const [promotingLead, setPromotingLead] = useState<Lead | null>(null);
   const [role, setRole] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
   const [confirmingCancel, setConfirmingCancel] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
   const [promotedNotice, setPromotedNotice] = useState(false);
   const [approving, setApproving] = useState<{ lead: Lead; draft: OutreachDraft } | null>(null);
   const [approveBusy, setApproveBusy] = useState(false);
@@ -495,11 +508,16 @@ export default function RunPage() {
   useEffect(() => {
     fetch("/api/auth/session")
       .then((r) => (r.ok ? r.json() : null))
-      .then((session) => setRole(session?.user?.role ?? null))
+      .then((session) => {
+        setRole(session?.user?.role ?? null);
+        setUserId(session?.user?.id ?? null);
+      })
       .catch(console.error);
   }, []);
 
   const isReviewer = role === "reviewer" || role === "admin";
+  // Mirrors the server rule: only the person who started the run, or an admin, can cancel it
+  const canCancel = !!data && (role === "admin" || (!!userId && data.run.user_id === userId));
 
   const fetchData = useCallback(() => {
     if (!params.id) return;
@@ -526,18 +544,25 @@ export default function RunPage() {
   const handleCancel = async () => {
     if (!params.id || cancelling) return;
     setCancelling(true);
+    setCancelError(null);
     try {
-      await fetch(`/api/runs/${params.id}`, {
+      const res = await fetch(`/api/runs/${params.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "failed", error: "Cancelled by user" }),
+        body: JSON.stringify({ status: "cancelled" }),
       });
+      const json = await res.json().catch(() => ({}));
       fetchData();
+      if (!res.ok) {
+        // e.g. the run finished before the cancel reached it
+        setCancelError(json.error || "Could not cancel the run. Please try again.");
+        return;
+      }
+      setConfirmingCancel(false);
     } catch {
-      console.error("Failed to cancel");
+      setCancelError("Could not cancel the run. Check your connection and try again.");
     } finally {
       setCancelling(false);
-      setConfirmingCancel(false);
     }
   };
 
@@ -588,18 +613,10 @@ export default function RunPage() {
       <div className="mt-4 mb-6">
         <div className="flex items-center gap-3 mb-2">
           <h1 className="text-xl font-bold">Run Details</h1>
-          <span
-            className={`text-xs px-2 py-1 rounded-full ${
-              run.status === "completed"
-                ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
-                : run.status === "failed"
-                ? "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400"
-                : "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400"
-            }`}
-          >
+          <span className={`text-xs px-2 py-1 rounded-full ${statusBadgeClass(run.status)}`}>
             {run.status}
           </span>
-          {run.status === "running" && role && (
+          {run.status === "running" && canCancel && (
             <button
               onClick={() => setConfirmingCancel(true)}
               disabled={cancelling}
@@ -615,7 +632,13 @@ export default function RunPage() {
           {run.actual_cost != null && run.actual_cost > 0 && ` · $${run.actual_cost.toFixed(4)}`}
         </p>
         {run.error && (
-          <div className="text-sm text-red-400 mt-2 bg-red-950/20 border border-red-800/30 p-3 rounded-lg">
+          <div
+            className={`text-sm mt-2 p-3 rounded-lg border ${
+              run.status === "cancelled"
+                ? "text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-900/40 border-gray-300 dark:border-gray-700"
+                : "text-red-400 bg-red-950/20 border-red-800/30"
+            }`}
+          >
             {run.error}
           </div>
         )}
@@ -890,8 +913,12 @@ export default function RunPage() {
           confirmLabel="Cancel Run"
           tone="red"
           busy={cancelling}
+          error={cancelError}
           onConfirm={handleCancel}
-          onClose={() => setConfirmingCancel(false)}
+          onClose={() => {
+            setConfirmingCancel(false);
+            setCancelError(null);
+          }}
         />
       )}
 
