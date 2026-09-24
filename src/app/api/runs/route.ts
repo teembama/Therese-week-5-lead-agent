@@ -80,8 +80,8 @@ export async function POST(req: NextRequest) {
       // Install dependencies
       const install = await sandbox.runCommand({
         cmd: "npm",
-        args: ["ci", "--prefer-offline"],
-        timeoutMs: 120000,
+        args: ["install"],
+        timeoutMs: 300000,
       });
 
       if (install.exitCode !== 0) {
