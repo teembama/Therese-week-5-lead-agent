@@ -509,6 +509,8 @@ const SYSTEM_PROMPT = `You are Koya Lead Studio — an AI lead research and outr
 
    Preserve explicit hard requirements from the user's objective. Do not silently weaken, replace, or invent qualification criteria.
 
+   The business_problem field must come from the user's objective. If the user did not state a business problem or need, set business_problem to 'Not specified by user' rather than inventing one. Do not infer or fabricate business problems, buyer personas, or value propositions based on Koya's offering or your own assumptions. The ICP should reflect what the user actually asked for.
+
    Save the refined ICP to the run record using update_run before company discovery begins.
 
 2. DISCOVER candidate companies.
