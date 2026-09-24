@@ -36,14 +36,8 @@ async function main() {
   console.log(`Starting agent for run ${runId}: ${run.objective}`);
 
   try {
-    const result = await runAgent({
-      runId: run.id,
-      objective: run.objective,
-      leadLimit: run.lead_limit,
-      candidateLimit: run.candidate_limit,
-      scrapeLimit: run.scrape_limit,
-      agentTurnLimit: run.agent_turn_limit,
-    });
+    // runAgent loads the objective and limits from the run record itself
+    const result = await runAgent(run.id);
 
     console.log(`Agent finished: ${result.status}, cost: $${result.cost}`);
     process.exit(result.status === "completed" ? 0 : 1);

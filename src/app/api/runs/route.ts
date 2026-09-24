@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { getSession, requireRole } from "@/lib/auth";
-
-const CANDIDATE_POOL_MULTIPLIER = 2;
+import {
+  MAX_LEADS,
+  DEFAULT_AGENT_TURN_LIMIT,
+  parseLeadTarget,
+  candidateLimitFor,
+} from "@/lib/limits";
 
 // POST /api/runs — create run and start agent (validation already done by /api/validate)
 export async function POST(req: NextRequest) {
@@ -22,13 +26,20 @@ export async function POST(req: NextRequest) {
   }
 
   const objective = body.objective as string;
-  const leadTarget = (body.leadTarget as number) || 10;
-
   if (!objective || typeof objective !== "string" || objective.trim().length === 0) {
     return NextResponse.json({ error: "Objective is required." }, { status: 400 });
   }
 
-  const candidateLimit = leadTarget * CANDIDATE_POOL_MULTIPLIER;
+  // The candidate and scrape budgets derive from this, so it must be bounded server-side
+  const leadTarget = parseLeadTarget(body.leadTarget ?? MAX_LEADS);
+  if (leadTarget === null) {
+    return NextResponse.json(
+      { error: `Lead target must be a whole number between 1 and ${MAX_LEADS}.` },
+      { status: 400 }
+    );
+  }
+
+  const candidateLimit = candidateLimitFor(leadTarget);
 
   // Idempotency: return an identical run started in the last 30s instead of duplicating it
   const { data: recent } = await supabase
@@ -51,7 +62,7 @@ export async function POST(req: NextRequest) {
       lead_limit: leadTarget,
       candidate_limit: candidateLimit,
       scrape_limit: candidateLimit,
-      agent_turn_limit: 25,
+      agent_turn_limit: DEFAULT_AGENT_TURN_LIMIT,
     })
     .select("id")
     .single();
@@ -60,21 +71,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Failed to create run. Please try again." }, { status: 500 });
   }
 
-  // Start agent in-process in the background
+  // Start agent in-process in the background. It loads its objective and limits from the
+  // run record and records its own failures, so only the run id is passed.
   const { runAgent } = await import("@/lib/agent");
-  runAgent({
-    runId: run.id,
-    objective: objective.trim(),
-    leadLimit: leadTarget,
-    candidateLimit,
-    scrapeLimit: candidateLimit,
-    agentTurnLimit: 25,
-  }).catch((err) => {
+  runAgent(run.id).catch((err) => {
     console.error("Agent failed:", err);
-    supabase
-      .from("lead_runs")
-      .update({ status: "failed", error: String(err), updated_at: new Date().toISOString() })
-      .eq("id", run.id);
   });
 
   return NextResponse.json({ run_id: run.id, status: "running" });

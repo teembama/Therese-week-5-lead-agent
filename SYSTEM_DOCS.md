@@ -86,20 +86,37 @@ All tables have RLS enabled. Server-side access uses the Supabase service role k
 
 ## Agent Tools (5 in src/lib/agent.ts)
 
+### How the tools are bound and limited
+- `runAgent(runId)` loads the run record and builds a **per-run context** (`createRunContext`). The five tools are created per run (`createRunTools(ctx)`) with a fresh MCP server, so every write targets `ctx.runId`. **No tool accepts a `run_id` argument**; the model cannot address another run. Nothing is module-global, so concurrent runs cannot share state.
+- Limits come from the `lead_runs` record (`lead_limit`, `candidate_limit`, `scrape_limit`, `agent_turn_limit`), clamped to hard maximums in `src/lib/limits.ts` (10 leads, 40 candidates, 40 scrapes, 50 turns, 120 tool calls). The model's numbers are only requests.
+- Budgets are **reserved synchronously before any await**, so parallel tool calls in one turn cannot both pass a check. This is atomic within the Node process running the run; there is no database-level constraint (see Known Issues).
+- Every `update_run`, `discover_companies`, `scrape_company` and `save_lead` call is **logged by the application** to `agent_tool_calls` (tool name, safe input summary, result summary, success/error, error category, duration). The model cannot skip or alter these rows. API keys, query strings and page content are never logged.
+
 ### update_run
-Updates the run record: saves refined ICP, changes status, records cost, records user-facing error messages.
+Saves the refined ICP, the final status (`completed`/`failed` only) and a user-facing message. Writes only while the run is still `running`, so a cancelled run is never revived. Cost is recorded by the runtime from the SDK result, not by the model.
 
 ### discover_companies
-Calls Apify Google Search actor via REST API. Hard cap enforced server-side: `Math.min(args.max_results, 20)`. Returns titles + URLs + snippets.
+Calls the Apify Google Search actor (token in the `Authorization` header). Enforces the **total candidate budget**: each call is granted `min(requested, 20, remaining budget)`, results actually returned count against the budget (unreturned and failed requests are refunded), and calls are rejected once it is used. Drops denylisted non-company domains (social, job boards, directories/review sites, contact-data vendors, gov/edu) and domains already returned in the run.
+
+**Search strategy:** the system prompt directs the agent to run several short, focused queries (2–4 ICP terms each, e.g. industry + geography) instead of one query containing every criterion, to change angle when a query returns mostly junk, and to verify criteria search engines can't filter (e.g. headcount) during research.
+
+**Candidate budget:** `candidate_limit = lead_limit × 4` (target 5 → 20; max 10 → 40), set in `POST /api/runs`, which rejects lead targets that are not whole numbers from 1 to 10.
 
 ### scrape_company
-Calls Firecrawl scrape endpoint. Extracts markdown + metadata, truncates to 4000 chars. Uses `onlyMainContent: true`.
+Calls the Firecrawl scrape endpoint; truncates content to 4000 chars. Enforces the **scrape limit**: every attempt counts, each URL may be scraped once (one retry after a failure), and calls past the limit are rejected.
 
 ### save_lead
-Validates required fields. Inserts lead record, source evidence records (lead_sources), and outreach drafts (outreach_drafts, only for qualified leads).
+Enforces the **qualified-lead limit** (counting leads already saved for the run) and rejects **duplicate companies** (same normalized domain, or same name if no domain). Inserts the lead, its sources and its outreach (qualified leads only). A failed lead insert releases the reservation so one retry can succeed; a failure after the lead row exists is reported as a partial save.
 
 ### log_tool_call
-Writes audit record for every tool invocation. Agent is instructed to call after every other tool use.
+Optional agent narrative. Stored with `tool_name = "agent_note"`, so it can never be mistaken for, or impersonate, an application-logged tool call.
+
+### Agent runtime configuration (`buildQueryOptions`)
+- `tools: ["Skill"]`: the only built-in tool is Skill. Bash, Read, Write, Edit, WebFetch, WebSearch, Task etc. are not available. Verified against the CLI's `system/init` message: the agent sees `Skill` plus the five `mcp__lead-tools__*` tools.
+- `skills`: the five project skills only; `permissionMode: "dontAsk"` denies anything not pre-approved; `strictMcpConfig: true`.
+- `settingSources: ["project"]`: project skills load, but machine-level user settings do not (previously `~/.claude/settings.json` could change the model). `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` keeps the repo's developer notes (CLAUDE.md/AGENTS.md) out of the agent's context.
+- `model: "claude-sonnet-5"`: pinned so local and Railway behave the same. Earlier runs used the CLI default, Opus 5 ($5/$25 per MTok); Sonnet 5 ($2/$10) was chosen to cut per-run cost.
+- `maxTurns` from the run record; `maxBudgetUsd: 5`. The SDK checks the budget between turns, so a run can overshoot by up to one turn. Cost is the SDK's own calculation, not a provider invoice. Hitting either limit marks the run `failed` with a plain-language message.
 
 ---
 
@@ -171,15 +188,15 @@ If Claude validation API fails: returns 503 "temporarily unavailable" (never sil
 - All API keys server-side only (env vars)
 - RLS enabled on all Supabase tables
 - .env.local in .gitignore
-- Apify results hard-capped at 20 (tool handler enforced)
-- Agent turns capped at 25
-- Agent cannot find/validate emails or send outreach
+- Candidate, scrape, qualified-lead, duplicate, tool-call, turn and USD limits enforced in code (see Agent Tools)
+- Agent tool surface restricted by SDK configuration, not by prompt
+- Agent cannot send outreach (no tool exists); not finding/validating emails is enforced by the prompt plus the absence of any email tool
 
 ---
 
 ## Current Limitations & Known Issues
 
-1. Tool logging relies on the agent calling log_tool_call rather than application-controlled wrapping
+1. Limits are enforced in the process running the agent, not by database constraints. Recommended (not applied) migration for defence in depth: `create unique index leads_run_domain_uniq on leads (run_id, lower(company_domain)) where company_domain is not null;`
 2. No authentication — single-user system, no ownership checks on run access
 3. save_lead is not atomic — partial failures (lead saved but outreach fails) are reported but not rolled back
 4. No rate limiting on API endpoints

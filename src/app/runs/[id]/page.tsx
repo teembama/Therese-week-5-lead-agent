@@ -213,6 +213,7 @@ const TOOL_LABELS: Record<string, string> = {
   save_lead: "Save Lead",
   update_run: "Update Run",
   log_tool_call: "Log",
+  agent_note: "Agent Note",
   manual_review: "Human Review",
   manual_approval: "Human Approval",
 };
