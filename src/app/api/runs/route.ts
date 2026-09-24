@@ -147,6 +147,11 @@ export async function POST(req: NextRequest) {
 
 // GET /api/runs — list all runs
 export async function GET() {
+  const user = await getSession();
+  if (!user) {
+    return NextResponse.json({ error: "Not authenticated." }, { status: 401 });
+  }
+
   const { data, error } = await supabase
     .from("lead_runs")
     .select("id, objective, status, created_at")
