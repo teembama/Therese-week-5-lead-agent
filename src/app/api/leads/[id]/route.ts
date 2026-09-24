@@ -103,7 +103,7 @@ export async function PATCH(
   const { error: logError } = await supabase.from("agent_tool_calls").insert({
     run_id: lead.run_id,
     tool_name: "manual_review",
-    purpose: `Human reviewer promoted ${lead.company_name} to qualified`,
+    purpose: `Human reviewer promoted ${lead.company_name} to qualified (reviewer: ${user.username})`,
     input_summary: `Lead ${lead.id}: needs_review → qualified (outreach pending)`,
     result_summary: `Reason: ${reason}`,
     status: "success",

@@ -689,7 +689,9 @@ export default function RunPage() {
                   </div>
                 </button>
 
-                {lead.qualification_status === "needs_review" && isReviewer && (
+                {lead.qualification_status === "needs_review" &&
+                  isReviewer &&
+                  run.status !== "running" && (
                   <div className="px-4 pb-3 -mt-1 flex justify-end">
                     <button
                       onClick={() => setPromotingLead(lead)}
