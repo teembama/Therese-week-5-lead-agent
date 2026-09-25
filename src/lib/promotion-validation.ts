@@ -52,18 +52,24 @@ ${list(ctx.fitReasons)}
 ${ctx.reason}
 </reason>
 
-The reason is valid only if ALL of these hold:
-1. It is relevant: it explains why this company is a good fit for the objective despite the concerns (it addresses at least one concern, or gives a concrete fact that outweighs them).
-2. It is specific: it refers to this company, its situation, or the concern — for example a verified fact such as headcount, location, product, or a need — not something that could be said of any company.
-3. It is a genuine explanation: not gibberish, a joke, off-topic text, or generic filler such as "has potential", "looks good", "good fit", or "trust me".
+Your only job is to check that the reason is a genuine, company-specific justification. You are NOT deciding whether the company should be qualified: the reviewer decides that, and may qualify a company even if a concern is unresolved or the company does not meet every requirement of the objective.
+
+Decide in this order:
+1. INVALID if it is gibberish, a joke, off-topic, or generic filler such as "has potential", "looks good", "good fit", "trust me", or "their activities matched what we do".
+2. INVALID if it does not mention anything specific about THIS company — a statement that could apply to any company.
+3. Otherwise it is VALID if EITHER:
+   a. it addresses at least one of the specific concerns listed above (for example with a verified fact), OR
+   b. it gives a relevant, company-specific justification for qualifying this company despite the concerns: something about what this company does, sells, or needs, or who it serves, that relates to the objective. It does not have to resolve or even mention a concern.
+Never mark a reason invalid only because it leaves a concern unresolved.
 
 Respond ONLY with JSON:
 {"valid": true}
 or
-{"valid": false, "explanation": "<one or two sentences telling the reviewer what is missing, addressed to them>", "example": "<one sentence showing what a good reason could look like for THIS company's concerns, citing the kind of concrete fact that would address them>"}
+{"valid": false, "explanation": "<one or two sentences telling the reviewer what is missing, addressed to them>", "example": "<one sentence showing what a good reason could look like for THIS company, either addressing a concern or giving a company-specific justification>"}
 
-For example, if a concern is that the employee count may be outside the objective's range, a good example is: "Their LinkedIn profile shows 23 employees, which is within the 10-100 range."
-The example is only an illustration of the expected kind of reason; it does not change the rules above.`;
+Examples of valid reasons (illustrations only; they do not change the rules above):
+- Addressing a concern about the employee count: "Their LinkedIn profile shows 23 employees, which is within the 10-100 range."
+- A company-specific justification despite the concerns: "Their website says field teams use their forms app to replace paper inspections, which is exactly the manual workflow the objective targets."`;
 }
 
 // callModel sends the prompt to the model and returns its raw text reply
