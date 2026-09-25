@@ -23,7 +23,8 @@ Browser (Next.js pages)
   ├─ POST /api/runs          structural checks again, one running run per user (409) → lead_runs row → runAgent(runId) in-process
   ├─ GET  /api/runs          run list (runs stale-run recovery first)
   ├─ GET  /api/runs/[id]     run + leads + sources + outreach + tool calls; UI polls every 3 s
-  └─ PATCH /api/leads/[id]   promote a needs_review lead; the reason is checked by Claude Haiku first
+  ├─ PATCH /api/leads/[id]   promote a needs_review lead (reason checked by Claude Haiku), then draft its outreach
+  └─ POST /api/leads/[id]/outreach   retry outreach drafting for a qualified lead with no drafts
 
 runAgent(runId)  (src/lib/agent.ts, runs inside the Next.js server process)
   ├─ loads objective + limits from the run record (clamped to hard maximums)
@@ -142,7 +143,7 @@ No tool accepts a `run_id`: tools are created per run and write only to that run
 | `leads` | company, domain, status, confidence, fit reasons, concerns, source URLs, source summary |
 | `lead_sources` | per-lead evidence: URL, type, title, summary, relevant evidence |
 | `outreach_drafts` | 3 emails (subject, body, personalization), LinkedIn message, status (`draft`/`approved`) |
-| `agent_tool_calls` | application-written audit of tool calls, agent notes, and human actions (`manual_review`, `manual_approval`, `manual_cancel`) |
+| `agent_tool_calls` | application-written audit of tool calls, agent notes, and human actions (`manual_review`, `manual_approval`, `manual_cancel`), and outreach drafted for promoted leads (`manual_outreach`) |
 | `users` | username, bcrypt password hash, role, display name |
 
 - `lead_runs.status` has a check constraint. **Apply `supabase/migrations/20260924230000_add_cancelled_run_status.sql`** so it accepts `cancelled`; until then, cancelled runs are stored as `failed` with the cancellation message.
@@ -220,7 +221,7 @@ All signed-in users see all runs (a shared team workspace).
 3. **Semantic validation is not repeated on run creation**: POST /api/runs re-runs the structural checks only; the Haiku check happens in /api/validate.
 4. **Most limits are enforced in the server process**; the database adds a unique lead domain per run and one running run per user once the two pending migrations are applied.
 5. **Evidence is verified per page, not per claim**: every cited source must be a page this run retrieved for that company, but whether each outreach claim appears on those pages is a prompt rule.
-6. **Promotion by a reviewer** creates a qualified lead without sources or outreach ("outreach pending").
+6. **Outreach for promoted leads** (`src/lib/promoted-outreach.ts`): needs_review leads are stored without sources, so after a promotion up to two pages of the company's own website (its LinkedIn page if it has no website) are scraped, saved as `lead_sources`, and used by the agent's model (`claude-sonnet-5`) under the agent's own outreach rules and skills to write the drafts. The drafts cite only those pages, but claim-level grounding is still a prompt rule. If drafting fails, the lead stays qualified; the lead card shows "Outreach generation failed" and a **Generate outreach** button. The promote request waits for the drafts (about 15-30 s). Each attempt is logged as `manual_outreach` and costs up to 2 Firecrawl scrapes and one Sonnet call; that cost is not added to the run's `actual_cost`.
 7. **Cancellation is cooperative**: the model step in progress when a user cancels completes (and is billed) before the next tool call stops it.
 8. **Interrupted runs are not resumed**; they are marked failed after 35 minutes without a heartbeat.
 9. **Cost shown is Claude only**; Apify and Firecrawl usage is not tracked.

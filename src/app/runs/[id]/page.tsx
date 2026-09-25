@@ -229,6 +229,7 @@ const TOOL_LABELS: Record<string, string> = {
   manual_review: "Human review",
   manual_approval: "Human approval",
   manual_cancel: "Cancelled",
+  manual_outreach: "Outreach drafting",
 };
 
 const APP_LOGGED_TOOLS = new Set(["update_run", "discover_companies", "scrape_company", "save_lead"]);
@@ -418,6 +419,9 @@ function LeadCard({
   onToggle,
   onPromote,
   onApprove,
+  outreachFailure,
+  generating,
+  onGenerateOutreach,
 }: {
   lead: Lead;
   runStatus: string;
@@ -426,8 +430,12 @@ function LeadCard({
   onToggle: () => void;
   onPromote: () => void;
   onApprove: (draft: OutreachDraft) => void;
+  outreachFailure: string | null;
+  generating: boolean;
+  onGenerateOutreach: () => void;
 }) {
   const draft = lead.outreach_drafts?.[0];
+  const missingOutreach = lead.qualification_status === "qualified" && !draft && runStatus !== "running";
   const panelId = `lead-${lead.id}`;
   return (
     <Card className="overflow-hidden">
@@ -469,9 +477,27 @@ function LeadCard({
         </div>
       )}
 
+      {missingOutreach && (outreachFailure || isReviewer) && (
+        <div className="-mt-1 flex flex-wrap items-center justify-end gap-3 px-5 pb-3">
+          {outreachFailure && (
+            <p role="alert" className="mr-auto text-sm text-danger">
+              Outreach generation failed{outreachFailure !== "failed" ? `: ${outreachFailure}` : "."}
+            </p>
+          )}
+          {isReviewer && (
+            <Button size="sm" variant="accent" onClick={onGenerateOutreach} disabled={generating}>
+              {generating && (
+                <span className="h-3 w-3 animate-spin rounded-full border-2 border-rose-deep/40 border-t-rose-deep" aria-hidden="true" />
+              )}
+              {generating ? "Drafting outreach…" : "Generate outreach"}
+            </Button>
+          )}
+        </div>
+      )}
+
       {expanded && (
         <div id={panelId} className="space-y-7 border-t border-line px-5 py-6">
-          {lead.qualification_status === "qualified" && !draft && runStatus !== "running" && (
+          {missingOutreach && !outreachFailure && !generating && (
             <p className="text-sm italic text-muted">Outreach pending.</p>
           )}
           {lead.fit_reasons.length > 0 && (
@@ -570,7 +596,17 @@ function ToolCallList({ toolCalls, runStatus }: { toolCalls: ToolCall[]; runStat
   );
 }
 
-function PromoteLeadModal({ lead, onClose, onPromoted }: { lead: Lead; onClose: () => void; onPromoted: () => void }) {
+type OutreachOutcome = { status: string; error?: string } | undefined;
+
+function PromoteLeadModal({
+  lead,
+  onClose,
+  onPromoted,
+}: {
+  lead: Lead;
+  onClose: () => void;
+  onPromoted: (outreach: OutreachOutcome) => void;
+}) {
   const [reason, setReason] = useState("");
   const [phase, setPhase] = useState<"edit" | "validating" | "confirm" | "saving">("edit");
   const [token, setToken] = useState<string | null>(null);
@@ -623,7 +659,7 @@ function PromoteLeadModal({ lead, onClose, onPromoted }: { lead: Lead; onClose: 
         setPhase("confirm");
         return;
       }
-      onPromoted();
+      onPromoted(json.outreach);
     } catch {
       setError("Failed to update lead. Please try again.");
       setPhase("confirm");
@@ -634,9 +670,14 @@ function PromoteLeadModal({ lead, onClose, onPromoted }: { lead: Lead; onClose: 
     return (
       <ConfirmModal
         title="Confirm promotion"
-        message={`Promote ${lead.company_name} to qualified?`}
+        message={
+          phase === "saving"
+            ? `Promoting ${lead.company_name} and drafting its outreach from the company's website. This can take up to a minute.`
+            : `Promote ${lead.company_name} to qualified? Outreach drafts will be written from the company's website.`
+        }
         cancelLabel="Back"
         confirmLabel="Promote lead"
+        busyLabel="Promoting and drafting…"
         tone="rose"
         busy={phase === "saving"}
         error={error}
@@ -686,7 +727,7 @@ function PromoteLeadModal({ lead, onClose, onPromoted }: { lead: Lead; onClose: 
         className="mt-2 w-full rounded-lg border border-line-strong bg-surface p-3 text-sm focus:border-rose focus:outline-none focus:ring-2 focus:ring-rose/20"
         disabled={busy}
       />
-      <p className="mt-1.5 text-xs text-muted">Outreach is not generated automatically for promoted leads.</p>
+      <p className="mt-1.5 text-xs text-muted">After promotion, outreach drafts are written from the company&apos;s website for you to review.</p>
       {error && (
         <Alert tone="danger" className="mt-3">
           {error}
@@ -713,6 +754,7 @@ function ConfirmModal({
   cancelLabel,
   tone = "neutral",
   busy = false,
+  busyLabel = "Working…",
   error,
   onConfirm,
   onClose,
@@ -723,6 +765,7 @@ function ConfirmModal({
   cancelLabel?: string;
   tone?: "red" | "green" | "rose" | "neutral";
   busy?: boolean;
+  busyLabel?: string;
   error?: string | null;
   onConfirm: () => void;
   onClose: () => void;
@@ -743,7 +786,7 @@ function ConfirmModal({
           </Button>
         )}
         <Button size="sm" variant={variant} onClick={onConfirm} disabled={busy}>
-          {busy ? "Working…" : confirmLabel}
+          {busy ? busyLabel : confirmLabel}
         </Button>
       </div>
     </Modal>
@@ -762,7 +805,9 @@ export default function RunPage() {
   const [userId, setUserId] = useState<string | null>(null);
   const [confirmingCancel, setConfirmingCancel] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
-  const [promotedNotice, setPromotedNotice] = useState(false);
+  const [promotedNotice, setPromotedNotice] = useState<{ outreach: OutreachOutcome } | null>(null);
+  const [generatingFor, setGeneratingFor] = useState<string | null>(null);
+  const [outreachErrors, setOutreachErrors] = useState<Record<string, string>>({});
   const [approving, setApproving] = useState<{ lead: Lead; draft: OutreachDraft } | null>(null);
   const [approveBusy, setApproveBusy] = useState(false);
   const [approveError, setApproveError] = useState<string | null>(null);
@@ -879,6 +924,37 @@ export default function RunPage() {
   const showNeedsReview = qualified.length < (run.lead_limit || 10);
   const visibleLeads = showNeedsReview ? [...qualified, ...needsReview] : qualified;
 
+  // A failed outreach attempt for a promoted lead: from this session, or from the audit log
+  // (manual_outreach rows are written for each attempt), so the warning survives a refresh
+  const outreachFailureFor = (lead: Lead): string | null => {
+    if (lead.outreach_drafts?.length) return null;
+    if (outreachErrors[lead.id]) return outreachErrors[lead.id];
+    const last = toolCalls.filter((tc) => tc.tool_name === "manual_outreach" && tc.input_summary?.startsWith(`Lead ${lead.id} `)).at(-1);
+    return last?.status === "error" ? "failed" : null;
+  };
+
+  const handleGenerateOutreach = async (lead: Lead) => {
+    setGeneratingFor(lead.id);
+    setOutreachErrors((e) => {
+      const next = { ...e };
+      delete next[lead.id];
+      return next;
+    });
+    try {
+      const res = await fetch(`/api/leads/${lead.id}/outreach`, { method: "POST" });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok && json.status !== "exists") {
+        setOutreachErrors((e) => ({ ...e, [lead.id]: json.error || "failed" }));
+      }
+    } catch {
+      setOutreachErrors((e) => ({ ...e, [lead.id]: "Could not reach the server." }));
+    } finally {
+      setGeneratingFor(null);
+      setExpandedLead(lead.id);
+      fetchData();
+    }
+  };
+
   // Sample pack: only for a completed run with at least one qualified lead
   const canExport = run.status === "completed" && qualified.length > 0;
   const handleExport = () => {
@@ -990,6 +1066,9 @@ export default function RunPage() {
                 setApproveError(null);
                 setApproving({ lead, draft });
               }}
+              outreachFailure={outreachFailureFor(lead)}
+              generating={generatingFor === lead.id}
+              onGenerateOutreach={() => handleGenerateOutreach(lead)}
             />
           ))}
           {visibleLeads.length === 0 && (
@@ -1010,10 +1089,13 @@ export default function RunPage() {
         <PromoteLeadModal
           lead={promotingLead}
           onClose={() => setPromotingLead(null)}
-          onPromoted={() => {
+          onPromoted={(outreach) => {
+            const id = promotingLead.id;
             setPromotingLead(null);
             fetchData();
-            setPromotedNotice(true);
+            setExpandedLead(id);
+            if (outreach?.status === "failed") setOutreachErrors((e) => ({ ...e, [id]: outreach.error || "failed" }));
+            setPromotedNotice({ outreach });
           }}
         />
       )}
@@ -1038,10 +1120,16 @@ export default function RunPage() {
       {promotedNotice && (
         <ConfirmModal
           title="Lead promoted"
-          message="The lead is now qualified. This action has been logged."
+          message={
+            promotedNotice.outreach?.status === "failed"
+              ? `The lead is now qualified, but outreach generation failed${promotedNotice.outreach.error ? `: ${promotedNotice.outreach.error}` : "."} Use "Generate outreach" on the lead card to try again.`
+              : promotedNotice.outreach?.status === "generated"
+                ? "The lead is now qualified and its outreach drafts are ready for review on the lead card. This action has been logged."
+                : "The lead is now qualified. This action has been logged."
+          }
           confirmLabel="OK"
-          onConfirm={() => setPromotedNotice(false)}
-          onClose={() => setPromotedNotice(false)}
+          onConfirm={() => setPromotedNotice(null)}
+          onClose={() => setPromotedNotice(null)}
         />
       )}
 

@@ -149,5 +149,16 @@ export async function PATCH(
     })
   );
 
-  return NextResponse.json({ lead: updated });
+  // Draft outreach for the newly qualified lead (evidence is scraped first: needs_review leads
+  // have no stored sources). The promotion is already saved; a failure here is reported, not undone.
+  const { generatePromotedOutreach, productionOutreachDeps } = await import("@/lib/promoted-outreach");
+  const outreach = await generatePromotedOutreach(productionOutreachDeps(), lead.id).catch((err) => {
+    console.error(`Outreach generation crashed for lead ${lead.id}:`, err);
+    return { status: "failed" as const, httpStatus: 500, error: "Outreach generation failed." };
+  });
+
+  return NextResponse.json({
+    lead: updated,
+    outreach: outreach.status === "failed" ? { status: "failed", error: outreach.error } : { status: outreach.status },
+  });
 }
