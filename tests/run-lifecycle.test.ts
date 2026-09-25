@@ -227,3 +227,23 @@ test("package.json pins a Node range that satisfies Next.js and Supabase minimum
   assert.ok(major < 23, `test runtime ${process.version} is inside the range`);
   assert.deepEqual([pkg.scripts.build, pkg.scripts.start], ["next build", "next start"]);
 });
+
+// --- Cost visibility ---
+
+test("the Apify estimate is companies returned × $0.004", async () => {
+  const { estimateApifyCost, APIFY_COST_PER_RESULT } = await import("../src/lib/limits");
+  assert.equal(APIFY_COST_PER_RESULT, 0.004);
+  assert.equal(estimateApifyCost(0), 0);
+  assert.equal(estimateApifyCost(20), 0.08);
+  assert.equal(estimateApifyCost(37), 0.148);
+});
+
+test("run completion saves the Claude cost and the Apify estimate from the companies returned", () => {
+  const agent = readFileSync("src/lib/agent.ts", "utf8");
+  assert.match(agent, /store\.recordCost\(runId, results\.cost, estimateApifyCost\(ctx\.usage\.candidates\)\)/);
+  assert.match(agent, /update\(\{ actual_cost: cost, estimated_cost: apifyEstimate,/);
+  const page = readFileSync("src/app/runs/[id]/page.tsx", "utf8");
+  assert.match(page, /Claude cost: \$\{run\.actual_cost\.toFixed\(2\)\}/);
+  assert.match(page, /Apify cost: ~\$\$\{run\.estimated_cost\.toFixed\(2\)\} \(estimated\)/);
+  assert.match(page, /Firecrawl: free tier/);
+});

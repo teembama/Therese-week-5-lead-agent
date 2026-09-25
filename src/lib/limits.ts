@@ -15,6 +15,13 @@ export const MAX_TOOL_CALLS_PER_RUN = 120;
 // Each URL may be scraped once, plus one retry after a failed attempt
 export const MAX_SCRAPE_ATTEMPTS_PER_URL = 2;
 
+// Estimated Apify price per company profile returned by harvestapi/linkedin-company-search (USD)
+export const APIFY_COST_PER_RESULT = 0.004;
+
+export function estimateApifyCost(resultsReturned: number): number {
+  return Math.round(resultsReturned * APIFY_COST_PER_RESULT * 10000) / 10000;
+}
+
 // Same limit /api/validate applies; enforced again at run creation so a direct API call can't skip it
 export const MAX_OBJECTIVE_LENGTH = 1000;
 

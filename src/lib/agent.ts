@@ -18,6 +18,7 @@ import {
   MAX_AGENT_TURN_LIMIT,
   MAX_TOOL_CALLS_PER_RUN,
   MAX_SCRAPE_ATTEMPTS_PER_URL,
+  estimateApifyCost,
   HEARTBEAT_INTERVAL_MS,
   clampLimit,
 } from "./limits";
@@ -81,7 +82,8 @@ export interface RunStore {
   listLeads(runId: string): Promise<ExistingLead[]>;
   // Applies the update only while the run is still "running"
   updateRunIfRunning(runId: string, updates: Record<string, unknown>): Promise<"updated" | "not_running">;
-  recordCost(runId: string, cost: number): Promise<void>;
+  // Claude cost (from the SDK) and the estimated Apify cost (companies returned × per-result price)
+  recordCost(runId: string, cost: number, apifyEstimate: number): Promise<void>;
   // Refreshes updated_at while the run is still "running" (liveness for stale-run recovery)
   heartbeat(runId: string): Promise<void>;
   // The run's existing lead for a company: matched by domain, or by name when there is no domain
@@ -136,10 +138,11 @@ export const supabaseRunStore: RunStore = {
   async heartbeat(runId) {
     await heartbeatRun(supabase, runId);
   },
-  async recordCost(runId, cost) {
+  async recordCost(runId, cost, apifyEstimate) {
+    // estimated_cost holds the estimated Apify cost; actual_cost is the Claude cost
     const { error } = await supabase
       .from("lead_runs")
-      .update({ actual_cost: cost, updated_at: new Date().toISOString() })
+      .update({ actual_cost: cost, estimated_cost: apifyEstimate, updated_at: new Date().toISOString() })
       .eq("id", runId);
     check(error);
   },
@@ -1738,7 +1741,8 @@ export async function runAgent(runId: string, store: RunStore = supabaseRunStore
       // user-facing message stand. "failed" is reserved for system breakage and hard stops.
       results.status = message.subtype === "success" ? "completed" : "failed";
 
-      await store.recordCost(runId, results.cost);
+      // usage.candidates counts the company profiles actually returned across discovery calls
+      await store.recordCost(runId, results.cost, estimateApifyCost(ctx.usage.candidates));
 
       // Only set final status if nothing else (agent or user cancel) already has
       const updates: Record<string, unknown> = { status: results.status };

@@ -87,6 +87,7 @@ interface RunData {
     error: string | null;
     created_at: string;
     actual_cost: number | null;
+    estimated_cost: number | null;
     lead_limit: number;
     user_id: string | null;
   };
@@ -1292,8 +1293,14 @@ export default function RunPage() {
         <h1 className="mt-3 max-w-3xl text-2xl font-semibold leading-snug tracking-tight sm:text-[28px]">{run.objective}</h1>
         <p className="mt-3 text-sm text-muted">
           {new Date(run.created_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}
-          {run.actual_cost != null && run.actual_cost > 0 && ` · Claude cost $${run.actual_cost.toFixed(4)}`}
         </p>
+        {run.actual_cost != null && (
+          <p className="mt-1 text-xs text-muted">
+            Claude cost: ${run.actual_cost.toFixed(2)}
+            {run.estimated_cost != null && ` · Apify cost: ~$${run.estimated_cost.toFixed(2)} (estimated)`}
+            {" · Firecrawl: free tier"}
+          </p>
+        )}
         {run.error && (
           <Alert tone={messageTone} className="mt-5 max-w-3xl">
             {run.error}
