@@ -11,16 +11,16 @@ export function isRunStatus(value: unknown): value is RunStatus {
   return typeof value === "string" && (RUN_STATUSES as readonly string[]).includes(value);
 }
 
-// Tailwind classes for status badges
+// Tailwind classes for status badges (design tokens from src/app/globals.css)
 export function statusBadgeClass(status: string): string {
   switch (status) {
     case "completed":
-      return "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400";
+      return "bg-success-soft text-success";
     case "failed":
-      return "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400";
+      return "bg-danger-soft text-danger";
     case "cancelled":
-      return "bg-gray-200 text-gray-700 dark:bg-gray-800 dark:text-gray-300";
+      return "bg-neutral-soft text-neutral";
     default:
-      return "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400";
+      return "bg-rose-soft text-rose-deep";
   }
 }

@@ -1,26 +1,73 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/*
+ * Koya Lead Studio design tokens (light theme only).
+ * Tailwind v4 turns each --color-* into utilities: bg-canvas, text-ink, border-line, bg-rose-soft…
+ *
+ * Contrast (WCAG AA, small text needs 4.5:1):
+ *  - rose #C0647B is 3.9:1 on white → accents only (tracker, focus rings, rules), never body text
+ *  - rose-deep #A34E65 is 5.5:1 on white → buttons, links, emphasised text
+ *  - muted #6B6660 is ~5.4:1 on canvas → secondary text
+ */
+@theme {
+  --color-canvas: #fafaf9;
+  --color-surface: #ffffff;
+  --color-ink: #1a1a1a;
+  --color-muted: #6b6660;
+  --color-line: #e8e4df;
+  --color-line-strong: #d6d0c9;
+
+  --color-rose: #c0647b;
+  --color-rose-deep: #a34e65;
+  --color-rose-deeper: #8a4055;
+  --color-rose-soft: #f7ebee;
+
+  --color-success: #3f6b4a;
+  --color-success-soft: #e9f1eb;
+  --color-danger: #9e3f3f;
+  --color-danger-soft: #f7e9e9;
+  --color-warning: #8a5a17;
+  --color-warning-soft: #faf1e2;
+  --color-neutral: #5d6670;
+  --color-neutral-soft: #edf0f2;
+
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  color-scheme: light;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Visible keyboard focus everywhere, in the accent colour */
+:focus-visible {
+  outline: 2px solid var(--color-rose);
+  outline-offset: 2px;
+}
+
+@keyframes koya-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgb(192 100 123 / 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgb(192 100 123 / 0);
+  }
+}
+
+.koya-pulse {
+  animation: koya-pulse 1.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .koya-pulse {
+    animation: none;
+  }
 }

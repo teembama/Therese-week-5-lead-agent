@@ -3,14 +3,15 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { statusBadgeClass } from "@/lib/run-status";
+import { Alert, Badge, Button, Card, ExternalLink, Label, Modal } from "@/components/ui";
 
 interface LeadSource {
   id: string;
   url: string;
-  title: string;
-  summary: string;
-  relevant_evidence: string;
+  title: string | null;
+  summary: string | null;
+  relevant_evidence: string | null;
+  source_type?: string | null;
 }
 
 interface OutreachDraft {
@@ -54,11 +55,28 @@ interface ToolCall {
   duration_ms: number | null;
 }
 
+interface SearchTerm {
+  term: string;
+  reason: string;
+  type?: string;
+}
+
+interface SearchPlan {
+  filters?: {
+    location?: string;
+    employee_range?: { min?: number; max?: number };
+    company_sizes?: string[];
+    industries?: string[];
+  };
+  names_company_type?: boolean;
+  search_terms?: SearchTerm[];
+}
+
 interface RunData {
   run: {
     id: string;
     objective: string;
-    refined_icp: Record<string, unknown> | null;
+    refined_icp: (Record<string, unknown> & { search_plan?: SearchPlan }) | null;
     status: string;
     error: string | null;
     created_at: string;
@@ -78,12 +96,7 @@ const STEPS = [
   { key: "outreach", label: "Outreach" },
 ];
 
-function getStepStatus(
-  toolCalls: ToolCall[],
-  leads: Lead[],
-  runStatus: string,
-  hasIcp: boolean
-) {
+function getStepStatus(toolCalls: ToolCall[], leads: Lead[], runStatus: string, hasIcp: boolean) {
   const toolNames = toolCalls.map((tc) => tc.tool_name);
   const hasDiscovery = toolNames.includes("discover_companies");
   const hasScrape = toolNames.includes("scrape_company");
@@ -101,22 +114,20 @@ function getStepStatus(
   let statusMessage = "";
   if (runStatus === "running") {
     if (!hasIcp) {
-      statusMessage = "Analyzing your objective and building target criteria...";
+      statusMessage = "Analyzing your objective and building target criteria…";
     } else if (!hasDiscovery) {
-      statusMessage = "Searching for matching companies...";
+      statusMessage = "Searching for matching companies…";
     } else if (!hasScrape) {
-      statusMessage = "Scraping company websites for evidence...";
+      statusMessage = "Reading company websites for evidence…";
     } else if (!hasLeads) {
-      statusMessage = "Evaluating companies against qualification criteria...";
+      statusMessage = "Evaluating companies against your criteria…";
     } else if (!hasOutreach) {
       const qualifiedCount = leads.filter((l) => l.qualification_status === "qualified").length;
       const outreachCount = leads.filter((l) => l.outreach_drafts?.length > 0).length;
       statusMessage =
-        qualifiedCount === 0
-          ? "Evaluating companies..."
-          : `Generating outreach ${outreachCount}/${qualifiedCount}...`;
+        qualifiedCount === 0 ? "Evaluating companies…" : `Drafting outreach ${outreachCount}/${qualifiedCount}…`;
     } else {
-      statusMessage = "Running final quality checks...";
+      statusMessage = "Running final quality checks…";
     }
   } else if (runStatus === "completed") {
     const qualifiedCount = leads.filter((l) => l.qualification_status === "qualified").length;
@@ -142,73 +153,62 @@ function ProgressTracker({
   hasIcp: boolean;
 }) {
   const { completed, statusMessage } = getStepStatus(toolCalls, leads, runStatus, hasIcp);
-
   const currentIndex = STEPS.findIndex((s) => !completed[s.key]);
   const activeIndex = currentIndex === -1 ? STEPS.length : currentIndex;
 
   return (
-    <div className="mb-8">
-      <div className="flex items-center justify-between py-4">
+    <div className="mt-10">
+      <ol className="flex items-start">
         {STEPS.map((step, i) => {
           const done = completed[step.key];
           const active = i === activeIndex && runStatus === "running";
           const failed = runStatus === "failed" && i === activeIndex;
-          // The step the run was on when the user cancelled it
           const stoppedHere = runStatus === "cancelled" && i === activeIndex;
+          const state = done ? "done" : failed ? "failed" : stoppedHere ? "cancelled" : active ? "in progress" : "pending";
 
           return (
-            <div key={step.key} className="flex items-center flex-1 last:flex-none">
-              <div className="flex flex-col items-center">
+            <li key={step.key} className="flex flex-1 items-start last:flex-none">
+              <div className="flex flex-col items-center" aria-label={`${step.label}: ${state}`}>
                 <div
-                  className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold border-2 transition-all ${
+                  className={`flex h-8 w-8 items-center justify-center rounded-full text-xs font-semibold transition-colors ${
                     done
-                      ? "bg-green-500 border-green-500 text-white"
+                      ? "bg-rose text-white"
                       : failed
-                      ? "bg-red-500 border-red-500 text-white"
-                      : stoppedHere
-                      ? "bg-gray-400 border-gray-400 text-white dark:bg-gray-600 dark:border-gray-600"
-                      : active
-                      ? "border-blue-500 text-blue-500 animate-pulse"
-                      : "border-gray-300 text-gray-400 dark:border-gray-600"
+                        ? "bg-danger text-white"
+                        : stoppedHere
+                          ? "bg-neutral text-white"
+                          : active
+                            ? "border border-rose bg-surface text-rose-deep koya-pulse"
+                            : "border border-line-strong bg-surface text-muted"
                   }`}
-                  aria-label={stoppedHere ? `${step.label}: cancelled` : undefined}
                 >
-                  {done ? "✓" : failed ? "✕" : stoppedHere ? "■" : i + 1}
+                  {done ? (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                  ) : failed ? (
+                    "✕"
+                  ) : stoppedHere ? (
+                    <span className="h-2 w-2 rounded-[2px] bg-white" aria-hidden="true" />
+                  ) : (
+                    i + 1
+                  )}
                 </div>
-                <span
-                  className={`text-xs mt-1.5 ${
-                    done
-                      ? "text-green-600 dark:text-green-400 font-medium"
-                      : active
-                      ? "text-blue-500 font-medium"
-                      : "text-gray-400"
-                  }`}
-                >
-                  {step.label}
-                </span>
+                <span className={`mt-2 text-xs ${done || active ? "font-medium text-ink" : "text-muted"}`}>{step.label}</span>
               </div>
               {i < STEPS.length - 1 && (
-                <div
-                  className={`flex-1 h-0.5 mx-2 mb-5 ${
-                    done ? "bg-green-500" : "bg-gray-200 dark:bg-gray-700"
-                  }`}
-                />
+                <div className={`mx-2 mt-4 h-px flex-1 ${done ? "bg-rose" : "bg-line-strong"}`} aria-hidden="true" />
               )}
-            </div>
+            </li>
           );
         })}
-      </div>
-
+      </ol>
       {statusMessage && (
         <p
-          className={`text-sm text-center mt-1 ${
-            runStatus === "failed"
-              ? "text-red-500"
-              : runStatus === "completed"
-              ? "text-green-600 dark:text-green-400"
-              : runStatus === "cancelled"
-              ? "text-gray-500"
-              : "text-gray-500 animate-pulse"
+          role="status"
+          aria-live="polite"
+          className={`mt-5 text-sm ${
+            runStatus === "failed" ? "text-danger" : runStatus === "completed" ? "text-success" : "text-muted"
           }`}
         >
           {statusMessage}
@@ -219,27 +219,30 @@ function ProgressTracker({
 }
 
 const TOOL_LABELS: Record<string, string> = {
-  discover_companies: "Apify Search",
-  scrape_company: "Firecrawl Scrape",
-  save_lead: "Save Lead",
-  update_run: "Update Run",
+  discover_companies: "LinkedIn search",
+  scrape_company: "Website research",
+  save_lead: "Save lead",
+  update_run: "Update run",
   log_tool_call: "Log",
-  agent_note: "Agent Note",
-  manual_review: "Human Review",
-  manual_approval: "Human Approval",
+  agent_note: "Agent note",
+  manual_review: "Human review",
+  manual_approval: "Human approval",
+  manual_cancel: "Cancelled",
 };
+
+const APP_LOGGED_TOOLS = new Set(["update_run", "discover_companies", "scrape_company", "save_lead"]);
 
 // --- Research Criteria ---
 // The agent's ICP keys vary between runs, so several aliases map to one label.
 const ICP_FIELDS: { label: string; keys: string[] }[] = [
-  { label: "Company Type", keys: ["company_type", "target_company_type"] },
+  { label: "Company type", keys: ["company_type", "target_company_type"] },
   { label: "Industries", keys: ["industries", "industry"] },
   { label: "Geography", keys: ["geography", "location", "locations"] },
-  { label: "Company Size", keys: ["company_size", "headcount_range", "employee_range", "size"] },
-  { label: "Buyer Persona", keys: ["buyer_persona", "persona"] },
-  { label: "Business Problem", keys: ["business_problem", "problem"] },
-  { label: "Hard Filters", keys: ["hard_filters"] },
-  { label: "Soft Preferences", keys: ["soft_preferences"] },
+  { label: "Company size", keys: ["company_size", "headcount_range", "employee_range", "size"] },
+  { label: "Buyer persona", keys: ["buyer_persona", "persona"] },
+  { label: "Business problem", keys: ["business_problem", "problem"] },
+  { label: "Hard filters", keys: ["hard_filters"] },
+  { label: "Soft preferences", keys: ["soft_preferences"] },
   { label: "Disqualifiers", keys: ["disqualifiers"] },
 ];
 
@@ -255,19 +258,61 @@ function formatIcpValue(value: unknown): string {
 }
 
 function humanizeKey(key: string): string {
-  return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  const s = key.replace(/_/g, " ");
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-function IcpDisplay({
-  objective,
-  icp,
-}: {
-  objective: string;
-  icp: Record<string, unknown>;
-}) {
+function formatRange(range?: { min?: number; max?: number }): string {
+  if (!range) return "";
+  if (range.min !== undefined && range.max !== undefined) return `${range.min}–${range.max} employees`;
+  if (range.min !== undefined) return `${range.min}+ employees`;
+  if (range.max !== undefined) return `up to ${range.max} employees`;
+  return "";
+}
+
+function SearchPlanView({ plan }: { plan: SearchPlan }) {
+  const f = plan.filters ?? {};
+  const filters: { label: string; value: string }[] = [
+    { label: "Location", value: f.location ?? "" },
+    { label: "Employee range", value: formatRange(f.employee_range) },
+    { label: "LinkedIn size bands", value: (f.company_sizes ?? []).join(", ") },
+    { label: "Industries", value: (f.industries ?? []).join(", ") },
+  ].filter((x) => x.value);
+
+  return (
+    <section>
+      <Label>Search plan</Label>
+      {filters.length > 0 && (
+        <dl className="mt-3 grid gap-x-8 gap-y-3 sm:grid-cols-2">
+          {filters.map((x) => (
+            <div key={x.label}>
+              <dt className="text-xs text-muted">{x.label}</dt>
+              <dd className="text-sm">{x.value}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {(plan.search_terms ?? []).length > 0 && (
+        <ul className="mt-5 space-y-3">
+          {(plan.search_terms ?? []).map((t) => (
+            <li key={t.term} className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:gap-4">
+              <span className="inline-flex w-fit shrink-0 items-center gap-2 rounded-full border border-rose/30 bg-rose-soft px-3 py-0.5 text-sm font-medium text-rose-deep">
+                {t.term}
+                {t.type && <span className="text-[11px] font-normal uppercase tracking-wide text-rose-deep/70">{t.type}</span>}
+              </span>
+              <span className="text-sm leading-relaxed text-muted">{t.reason}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function IcpDisplay({ objective, icp }: { objective: string; icp: Record<string, unknown> & { search_plan?: SearchPlan } }) {
   const [open, setOpen] = useState(false);
 
-  const knownKeys = new Set(ICP_FIELDS.flatMap((f) => f.keys));
+  const knownKeys = new Set([...ICP_FIELDS.flatMap((f) => f.keys), "search_plan"]);
   const rows: { label: string; value: string }[] = [];
   for (const field of ICP_FIELDS) {
     const key = field.keys.find((k) => icp[k] != null);
@@ -281,51 +326,297 @@ function IcpDisplay({
   }
 
   return (
-    <div className="mb-6 border rounded-lg">
+    <Card className="mt-10">
       <button
         onClick={() => setOpen(!open)}
         aria-expanded={open}
-        className="w-full flex items-center gap-2 p-3 text-sm font-medium text-left hover:bg-gray-50 dark:hover:bg-gray-900"
+        aria-controls="research-criteria"
+        className="flex w-full items-center justify-between px-6 py-4 text-left"
       >
-        <span className={`inline-block transition-transform ${open ? "rotate-90" : ""}`}>▶</span>
-        Research Criteria
+        <span className="text-sm font-semibold">Research criteria</span>
+        <span className="text-xs text-muted">{open ? "Hide" : "Show objective, ICP and search plan"}</span>
       </button>
       {open && (
-        <div className="border-t p-4 text-sm space-y-5">
+        <div id="research-criteria" className="space-y-8 border-t border-line px-6 py-6">
           <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1">
-              Your Objective
-            </h3>
-            <p className="text-gray-700 dark:text-gray-300">{objective}</p>
+            <Label>Your objective</Label>
+            <p className="mt-2 text-sm leading-relaxed">{objective}</p>
           </section>
-          <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
-              Refined ICP
-            </h3>
-            <div className="space-y-3">
-              {rows.map((row) => (
-                <div key={row.label}>
-                  <p className="text-xs font-medium text-gray-500">{row.label}</p>
-                  <p className="text-gray-700 dark:text-gray-300">{row.value}</p>
-                </div>
-              ))}
-            </div>
-          </section>
+          {rows.length > 0 && (
+            <section>
+              <Label>Refined ICP</Label>
+              <dl className="mt-3 grid gap-x-8 gap-y-4 sm:grid-cols-2">
+                {rows.map((row) => (
+                  <div key={row.label}>
+                    <dt className="text-xs text-muted">{row.label}</dt>
+                    <dd className="text-sm leading-relaxed">{row.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+          )}
+          {icp.search_plan && <SearchPlanView plan={icp.search_plan} />}
         </div>
       )}
-    </div>
+    </Card>
   );
 }
 
-function PromoteLeadModal({
+function BulletList({ items, tone }: { items: string[]; tone: "fit" | "concern" }) {
+  return (
+    <ul className="mt-2 space-y-1.5">
+      {items.map((item, i) => (
+        <li key={i} className="flex gap-2.5 text-sm leading-relaxed">
+          <span
+            className={`mt-[9px] h-1.5 w-1.5 shrink-0 rounded-full ${tone === "fit" ? "bg-success" : "bg-warning"}`}
+            aria-hidden="true"
+          />
+          <span>{item}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function Evidence({ lead }: { lead: Lead }) {
+  const recorded = new Set((lead.lead_sources ?? []).map((s) => s.url));
+  const otherUrls = (lead.source_urls ?? []).filter((u) => !recorded.has(u));
+  if ((lead.lead_sources ?? []).length === 0 && otherUrls.length === 0) return null;
+
+  return (
+    <section>
+      <Label>Source evidence</Label>
+      <ul className="mt-3 space-y-3">
+        {(lead.lead_sources ?? []).map((s) => (
+          <li key={s.id} className="rounded-lg border border-line bg-canvas px-4 py-3">
+            {s.title && <p className="text-sm font-medium">{s.title}</p>}
+            <p className="text-xs">
+              <ExternalLink url={s.url} />
+            </p>
+            {(s.relevant_evidence || s.summary) && (
+              <p className="mt-2 text-sm leading-relaxed text-muted">{s.relevant_evidence || s.summary}</p>
+            )}
+          </li>
+        ))}
+        {otherUrls.map((u) => (
+          <li key={u} className="text-xs">
+            <ExternalLink url={u} />
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function OutreachView({
+  draft,
+  canApprove,
+  onApprove,
+}: {
+  draft: OutreachDraft;
+  canApprove: boolean;
+  onApprove: () => void;
+}) {
+  return (
+    <section>
+      <div className="flex items-center gap-3">
+        <Label>Outreach drafts</Label>
+        <Badge status={draft.status || "draft"} />
+        {canApprove && (
+          <Button size="sm" variant="success" className="ml-auto" onClick={onApprove}>
+            Approve
+          </Button>
+        )}
+      </div>
+      <div className="mt-3 space-y-3">
+        {[1, 2, 3].map((n) => {
+          const subject = draft[`email_${n}_subject` as keyof OutreachDraft] as string;
+          const body = draft[`email_${n}_body` as keyof OutreachDraft] as string;
+          const personalization = draft[`email_${n}_personalization` as keyof OutreachDraft] as string;
+          if (!subject) return null;
+          return (
+            <div key={n} className="rounded-lg border border-line bg-surface px-4 py-3">
+              <p className="text-xs text-muted">Email {n}</p>
+              <p className="mt-0.5 text-sm font-medium">{subject}</p>
+              <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-ink/85">{body}</p>
+              {personalization && (
+                <p className="mt-2 border-l-2 border-rose/50 pl-3 text-xs italic text-muted">Personalization: {personalization}</p>
+              )}
+            </div>
+          );
+        })}
+        {draft.linkedin_message && (
+          <div className="rounded-lg border border-line bg-surface px-4 py-3">
+            <p className="text-xs text-muted">LinkedIn message</p>
+            <p className="mt-1 text-sm leading-relaxed text-ink/85">{draft.linkedin_message}</p>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function LeadCard({
   lead,
-  onClose,
-  onPromoted,
+  runStatus,
+  isReviewer,
+  expanded,
+  onToggle,
+  onPromote,
+  onApprove,
 }: {
   lead: Lead;
-  onClose: () => void;
-  onPromoted: () => void;
+  runStatus: string;
+  isReviewer: boolean;
+  expanded: boolean;
+  onToggle: () => void;
+  onPromote: () => void;
+  onApprove: (draft: OutreachDraft) => void;
 }) {
+  const draft = lead.outreach_drafts?.[0];
+  const panelId = `lead-${lead.id}`;
+  return (
+    <Card className="overflow-hidden">
+      <button
+        onClick={onToggle}
+        aria-expanded={expanded}
+        aria-controls={panelId}
+        className="flex w-full items-center justify-between gap-4 px-5 py-4 text-left transition-colors hover:bg-canvas"
+      >
+        <div className="min-w-0">
+          <p className="truncate text-[15px] font-medium">{lead.company_name}</p>
+          {lead.company_domain && <p className="truncate text-xs text-muted">{lead.company_domain}</p>}
+        </div>
+        <div className="flex shrink-0 items-center gap-3">
+          <span className="text-xs tabular-nums text-muted" title="Confidence">
+            {(lead.confidence * 100).toFixed(0)}%
+          </span>
+          <Badge status={lead.qualification_status} />
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            className={`text-muted transition-transform ${expanded ? "rotate-180" : ""}`}
+            aria-hidden="true"
+          >
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </div>
+      </button>
+
+      {lead.qualification_status === "needs_review" && isReviewer && runStatus !== "running" && (
+        <div className="-mt-1 flex justify-end px-5 pb-3">
+          <Button size="sm" variant="success" onClick={onPromote}>
+            Mark as qualified
+          </Button>
+        </div>
+      )}
+
+      {expanded && (
+        <div id={panelId} className="space-y-7 border-t border-line px-5 py-6">
+          {lead.qualification_status === "qualified" && !draft && runStatus !== "running" && (
+            <p className="text-sm italic text-muted">Outreach pending.</p>
+          )}
+          {lead.fit_reasons.length > 0 && (
+            <section>
+              <Label>Why it fits</Label>
+              <BulletList items={lead.fit_reasons} tone="fit" />
+            </section>
+          )}
+          {lead.concerns.length > 0 && (
+            <section>
+              <Label>Concerns</Label>
+              <BulletList items={lead.concerns} tone="concern" />
+            </section>
+          )}
+          {lead.source_summary && (
+            <section>
+              <Label>Source summary</Label>
+              <p className="mt-2 text-sm leading-relaxed">{lead.source_summary}</p>
+            </section>
+          )}
+          <Evidence lead={lead} />
+          {draft && (
+            <OutreachView
+              draft={draft}
+              canApprove={isReviewer && lead.qualification_status === "qualified" && draft.status === "draft"}
+              onApprove={() => onApprove(draft)}
+            />
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function truncate(text: string, max = 200): string {
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+function ToolCallList({ toolCalls, runStatus }: { toolCalls: ToolCall[]; runStatus: string }) {
+  if (toolCalls.length === 0) {
+    return (
+      <p className="text-sm text-muted">{runStatus === "running" ? "Waiting for the first tool call…" : "No tool calls recorded."}</p>
+    );
+  }
+  return (
+    <ol className="relative space-y-1 border-l border-line pl-6">
+      {toolCalls.map((tc) => {
+        const matches = tc.result_summary?.match(/linkedin_total_matches=(\d+)/)?.[1];
+        const isNote = tc.tool_name === "agent_note";
+        return (
+          <li key={tc.id} className="relative py-3">
+            <span
+              className={`absolute -left-[29px] top-[18px] h-2.5 w-2.5 rounded-full ring-4 ring-canvas ${
+                tc.status === "success" ? (isNote ? "bg-line-strong" : "bg-rose") : "bg-danger"
+              }`}
+              aria-hidden="true"
+            />
+            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+              <span className="text-sm font-medium" title={tc.tool_name}>
+                {TOOL_LABELS[tc.tool_name] ?? tc.tool_name}
+              </span>
+              {tc.status !== "success" && <span className="text-xs font-medium text-danger">error</span>}
+              {matches && (
+                <span className="rounded-full bg-rose-soft px-2 py-0.5 text-xs text-rose-deep">
+                  {Number(matches).toLocaleString()} LinkedIn matches
+                </span>
+              )}
+              <span className="ml-auto text-xs tabular-nums text-muted">
+                {new Date(tc.created_at).toLocaleTimeString()}
+                {tc.duration_ms != null && ` · ${(tc.duration_ms / 1000).toFixed(1)}s`}
+              </span>
+            </div>
+            {/* Application-logged tools carry a fixed purpose that only repeats the label above;
+                human actions (review, approval, cancel) carry real detail, e.g. who acted */}
+            {tc.purpose && !isNote && !APP_LOGGED_TOOLS.has(tc.tool_name) && (
+              <p className="mt-0.5 text-xs text-muted">{tc.purpose}</p>
+            )}
+            {isNote && tc.purpose && <p className="mt-0.5 text-xs text-muted">About: {tc.purpose}</p>}
+            {tc.input_summary && (
+              <p className="mt-1.5 break-words text-xs leading-relaxed text-ink/80">
+                <span className="text-muted">In: </span>
+                {truncate(tc.input_summary)}
+              </p>
+            )}
+            {tc.result_summary && (
+              <p className="mt-0.5 break-words text-xs leading-relaxed text-ink/80">
+                <span className="text-muted">{isNote ? "Note: " : "Out: "}</span>
+                {truncate(tc.result_summary)}
+              </p>
+            )}
+            {tc.error_message && <p className="mt-1 break-words text-xs text-danger">{truncate(tc.error_message)}</p>}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+function PromoteLeadModal({ lead, onClose, onPromoted }: { lead: Lead; onClose: () => void; onPromoted: () => void }) {
   const [reason, setReason] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -357,70 +648,47 @@ function PromoteLeadModal({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
-      onClick={onClose}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        className="w-full max-w-lg rounded-lg bg-white dark:bg-gray-900 border p-5 text-sm"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h2 className="text-base font-semibold mb-1">Mark as Qualified</h2>
-        <p className="text-xs text-gray-500 mb-4">
-          {lead.company_name}
-          {lead.company_domain && ` · ${lead.company_domain}`}
-        </p>
+    <Modal title="Mark as qualified" onClose={onClose} busy={submitting}>
+      <p className="text-sm text-muted">
+        {lead.company_name}
+        {lead.company_domain && ` · ${lead.company_domain}`}
+      </p>
 
-        {lead.concerns.length > 0 && (
-          <div className="mb-4">
-            <p className="font-medium text-yellow-700 dark:text-yellow-400 mb-1">
-              Agent&apos;s Concerns
-            </p>
-            <ul className="list-disc list-inside text-xs space-y-1">
-              {lead.concerns.map((c, i) => (
-                <li key={i}>{c}</li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        <label htmlFor="review-reason" className="block font-medium mb-1">
-          Reason for qualifying <span className="text-red-500">*</span>
-        </label>
-        <textarea
-          id="review-reason"
-          value={reason}
-          onChange={(e) => setReason(e.target.value)}
-          rows={4}
-          placeholder="Explain how the concerns above were addressed..."
-          className="w-full rounded border p-2 text-sm bg-transparent"
-          disabled={submitting}
-        />
-        <p className="text-xs text-gray-500 mt-1">
-          Outreach is not generated automatically for promoted leads.
-        </p>
-        {error && <p className="text-xs text-red-500 mt-2">{error}</p>}
-
-        <div className="flex justify-end gap-2 mt-4">
-          <button
-            onClick={onClose}
-            disabled={submitting}
-            className="text-xs px-3 py-1.5 border rounded hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSubmit}
-            disabled={submitting || !reason.trim()}
-            className="text-xs px-3 py-1.5 rounded bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
-          >
-            {submitting ? "Saving..." : "Mark as Qualified"}
-          </button>
+      {lead.concerns.length > 0 && (
+        <div className="mt-5">
+          <Label>The agent&apos;s concerns</Label>
+          <BulletList items={lead.concerns} tone="concern" />
         </div>
+      )}
+
+      <label htmlFor="review-reason" className="mt-5 block text-sm font-medium">
+        Reason for qualifying <span className="text-danger">*</span>
+      </label>
+      <textarea
+        id="review-reason"
+        value={reason}
+        onChange={(e) => setReason(e.target.value)}
+        rows={4}
+        placeholder="Explain how the concerns above were addressed…"
+        className="mt-1.5 w-full rounded-lg border border-line-strong bg-surface p-3 text-sm focus:border-rose focus:outline-none focus:ring-2 focus:ring-rose/20"
+        disabled={submitting}
+      />
+      <p className="mt-1.5 text-xs text-muted">Outreach is not generated automatically for promoted leads.</p>
+      {error && (
+        <Alert tone="danger" className="mt-3">
+          {error}
+        </Alert>
+      )}
+
+      <div className="mt-6 flex justify-end gap-2">
+        <Button size="sm" variant="secondary" onClick={onClose} disabled={submitting}>
+          Cancel
+        </Button>
+        <Button size="sm" variant="primary" onClick={handleSubmit} disabled={submitting || !reason.trim()}>
+          {submitting ? "Saving…" : "Mark as qualified"}
+        </Button>
       </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -445,53 +713,33 @@ function ConfirmModal({
   onConfirm: () => void;
   onClose: () => void;
 }) {
-  const toneClass =
-    tone === "red"
-      ? "bg-red-600 hover:bg-red-700"
-      : tone === "green"
-      ? "bg-green-600 hover:bg-green-700"
-      : "bg-blue-600 hover:bg-blue-700";
-
+  const variant = tone === "red" ? "danger" : tone === "green" ? "success" : "primary";
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
-      onClick={busy ? undefined : onClose}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        className="w-full max-w-md rounded-lg bg-white dark:bg-gray-900 border p-5 text-sm"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h2 className="text-base font-semibold mb-2">{title}</h2>
-        <p className="text-gray-600 dark:text-gray-400">{message}</p>
-        {error && <p className="text-xs text-red-500 mt-3">{error}</p>}
-        <div className="flex justify-end gap-2 mt-5">
-          {cancelLabel && (
-            <button
-              onClick={onClose}
-              disabled={busy}
-              className="text-xs px-3 py-1.5 border rounded hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
-            >
-              {cancelLabel}
-            </button>
-          )}
-          <button
-            onClick={onConfirm}
-            disabled={busy}
-            className={`text-xs px-3 py-1.5 rounded text-white disabled:opacity-50 ${toneClass}`}
-          >
-            {busy ? "Working..." : confirmLabel}
-          </button>
-        </div>
+    <Modal title={title} onClose={onClose} busy={busy}>
+      <p className="text-sm leading-relaxed text-muted">{message}</p>
+      {error && (
+        <Alert tone="danger" className="mt-4">
+          {error}
+        </Alert>
+      )}
+      <div className="mt-6 flex justify-end gap-2">
+        {cancelLabel && (
+          <Button size="sm" variant="secondary" onClick={onClose} disabled={busy}>
+            {cancelLabel}
+          </Button>
+        )}
+        <Button size="sm" variant={variant} onClick={onConfirm} disabled={busy}>
+          {busy ? "Working…" : confirmLabel}
+        </Button>
       </div>
-    </div>
+    </Modal>
   );
 }
 
 export default function RunPage() {
   const params = useParams();
   const [data, setData] = useState<RunData | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [expandedLead, setExpandedLead] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [activeTab, setActiveTab] = useState<"leads" | "tools">("leads");
@@ -523,11 +771,17 @@ export default function RunPage() {
     if (!params.id) return;
     fetch(`/api/runs/${params.id}`)
       .then((r) => {
-        if (!r.ok) throw new Error(`${r.status}`);
+        if (!r.ok) throw new Error(r.status === 404 ? "This run could not be found." : "This run could not be loaded.");
         return r.json();
       })
-      .then(setData)
-      .catch(console.error);
+      .then((json) => {
+        setData(json);
+        setLoadError(null);
+      })
+      .catch((err) => {
+        console.error(err);
+        setLoadError(err instanceof Error ? err.message : "This run could not be loaded.");
+      });
   }, [params.id]);
 
   useEffect(() => {
@@ -539,7 +793,7 @@ export default function RunPage() {
     if (!data || data.run.status !== "running") return;
     const interval = setInterval(fetchData, 3000);
     return () => clearInterval(interval);
-  }, [data?.run?.status, fetchData]);
+  }, [data?.run?.status, fetchData]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleCancel = async () => {
     if (!params.id || cancelling) return;
@@ -588,8 +842,17 @@ export default function RunPage() {
 
   if (!data) {
     return (
-      <main className="max-w-4xl mx-auto px-6 py-12">
-        <p className="text-gray-500">Loading...</p>
+      <main className="mx-auto max-w-5xl px-6 py-14">
+        <Link href="/" className="text-sm font-medium text-rose-deep hover:text-rose-deeper">
+          ← All runs
+        </Link>
+        {loadError ? (
+          <Alert tone="danger" className="mt-8">
+            {loadError}
+          </Alert>
+        ) : (
+          <p className="mt-8 text-sm text-muted">Loading run…</p>
+        )}
       </main>
     );
   }
@@ -600,296 +863,108 @@ export default function RunPage() {
   const qualified = leads.filter((l) => l.qualification_status === "qualified");
   const needsReview = leads.filter((l) => l.qualification_status === "needs_review");
   const showNeedsReview = qualified.length < (run.lead_limit || 10);
-  const visibleLeads = showNeedsReview
-    ? [...qualified, ...needsReview]
-    : qualified;
+  const visibleLeads = showNeedsReview ? [...qualified, ...needsReview] : qualified;
+
+  // The run's message: an error for failures, a neutral note otherwise (e.g. a shortfall)
+  const messageTone = run.status === "failed" ? "danger" : run.status === "cancelled" ? "neutral" : "warning";
+
+  const tabClass = (tab: "leads" | "tools") =>
+    `-mb-px border-b-2 pb-3 text-sm font-medium transition-colors ${
+      activeTab === tab ? "border-rose text-ink" : "border-transparent text-muted hover:text-ink"
+    }`;
 
   return (
-    <main className="max-w-4xl mx-auto px-6 py-12">
-      <Link href="/" className="text-sm text-blue-600 hover:underline">
-        ← Back
+    <main className="mx-auto max-w-5xl px-6 py-14">
+      <Link href="/" className="text-sm font-medium text-rose-deep hover:text-rose-deeper">
+        ← All runs
       </Link>
 
-      <div className="mt-4 mb-6">
-        <div className="flex items-center gap-3 mb-2">
-          <h1 className="text-xl font-bold">Run Details</h1>
-          <span className={`text-xs px-2 py-1 rounded-full ${statusBadgeClass(run.status)}`}>
-            {run.status}
-          </span>
+      <header className="mt-8">
+        <div className="flex flex-wrap items-center gap-3">
+          <Label>Run</Label>
+          <Badge status={run.status} />
           {run.status === "running" && canCancel && (
-            <button
+            <Button
+              size="sm"
+              variant="danger"
+              className="ml-auto"
               onClick={() => setConfirmingCancel(true)}
               disabled={cancelling}
-              className="ml-auto text-xs px-3 py-1 border border-red-300 text-red-600 rounded hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/20 disabled:opacity-50"
             >
-              {cancelling ? "Cancelling..." : "Cancel Run"}
-            </button>
+              {cancelling ? "Cancelling…" : "Cancel run"}
+            </Button>
           )}
         </div>
-        <p className="text-sm text-gray-700 dark:text-gray-300">{run.objective}</p>
-        <p className="text-xs text-gray-500 mt-1">
-          {new Date(run.created_at).toLocaleString()}
-          {run.actual_cost != null && run.actual_cost > 0 && ` · $${run.actual_cost.toFixed(4)}`}
+        <h1 className="mt-3 max-w-3xl text-2xl font-semibold leading-snug tracking-tight sm:text-[28px]">{run.objective}</h1>
+        <p className="mt-3 text-sm text-muted">
+          {new Date(run.created_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}
+          {run.actual_cost != null && run.actual_cost > 0 && ` · Claude cost $${run.actual_cost.toFixed(4)}`}
         </p>
         {run.error && (
-          <div
-            className={`text-sm mt-2 p-3 rounded-lg border ${
-              run.status === "cancelled"
-                ? "text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-900/40 border-gray-300 dark:border-gray-700"
-                : "text-red-400 bg-red-950/20 border-red-800/30"
-            }`}
-          >
+          <Alert tone={messageTone} className="mt-5 max-w-3xl">
             {run.error}
-          </div>
+          </Alert>
         )}
-      </div>
+      </header>
 
-      <ProgressTracker
-        toolCalls={toolCalls}
-        leads={leads}
-        runStatus={run.status}
-        hasIcp={!!run.refined_icp}
-      />
+      <ProgressTracker toolCalls={toolCalls} leads={leads} runStatus={run.status} hasIcp={!!run.refined_icp} />
 
       {run.refined_icp && <IcpDisplay objective={run.objective} icp={run.refined_icp} />}
-      <div className="flex gap-4 border-b mb-4">
+
+      <div className="mt-12 flex gap-8 border-b border-line" role="tablist" aria-label="Run details">
         <button
+          role="tab"
+          id="tab-leads"
+          aria-selected={activeTab === "leads"}
+          aria-controls="panel-leads"
           onClick={() => setActiveTab("leads")}
-          className={`pb-2 text-sm font-medium ${
-            activeTab === "leads"
-              ? "border-b-2 border-blue-600 text-blue-600"
-              : "text-gray-500 hover:text-gray-700"
-          }`}
+          className={tabClass("leads")}
         >
-          Leads ({qualified.length} qualified
-          {showNeedsReview && needsReview.length > 0
-            ? `, ${needsReview.length} review`
-            : ""}
-          )
+          Leads{" "}
+          <span className="text-muted">
+            ({qualified.length} qualified{showNeedsReview && needsReview.length > 0 ? `, ${needsReview.length} to review` : ""})
+          </span>
         </button>
         <button
+          role="tab"
+          id="tab-tools"
+          aria-selected={activeTab === "tools"}
+          aria-controls="panel-tools"
           onClick={() => setActiveTab("tools")}
-          className={`pb-2 text-sm font-medium ${
-            activeTab === "tools"
-              ? "border-b-2 border-blue-600 text-blue-600"
-              : "text-gray-500 hover:text-gray-700"
-          }`}
+          className={tabClass("tools")}
         >
-          Tool Calls ({toolCalls.length})
+          Activity <span className="text-muted">({toolCalls.length})</span>
         </button>
       </div>
 
       {activeTab === "leads" && (
-        <section className="mb-8">
-          <div className="space-y-2">
-            {visibleLeads.map((lead) => (
-              <div key={lead.id} className="border rounded-lg overflow-hidden">
-                <button
-                  onClick={() =>
-                    setExpandedLead(expandedLead === lead.id ? null : lead.id)
-                  }
-                  className="w-full text-left p-4 hover:bg-gray-50 dark:hover:bg-gray-900 transition-colors"
-                >
-                  <div className="flex justify-between items-center">
-                    <div>
-                      <span className="font-medium text-sm">{lead.company_name}</span>
-                      {lead.company_domain && (
-                        <span className="text-xs text-gray-500 ml-2">
-                          {lead.company_domain}
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-gray-500">
-                        {(lead.confidence * 100).toFixed(0)}%
-                      </span>
-                      <span
-                        className={`text-xs px-2 py-1 rounded-full ${
-                          lead.qualification_status === "qualified"
-                            ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
-                            : "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400"
-                        }`}
-                      >
-                        {lead.qualification_status === "qualified" ? "qualified" : "needs review"}
-                      </span>
-                    </div>
-                  </div>
-                </button>
-
-                {lead.qualification_status === "needs_review" &&
-                  isReviewer &&
-                  run.status !== "running" && (
-                  <div className="px-4 pb-3 -mt-1 flex justify-end">
-                    <button
-                      onClick={() => setPromotingLead(lead)}
-                      className="text-xs px-3 py-1 border border-green-300 text-green-700 rounded hover:bg-green-50 dark:border-green-800 dark:text-green-400 dark:hover:bg-green-900/20"
-                    >
-                      Mark as Qualified
-                    </button>
-                  </div>
-                )}
-
-                {expandedLead === lead.id && (
-                  <div className="border-t p-4 bg-gray-50 dark:bg-gray-900/50 text-sm space-y-4">
-                    {lead.qualification_status === "qualified" &&
-                      !lead.outreach_drafts?.[0] &&
-                      run.status !== "running" && (
-                        <p className="text-xs text-gray-500 italic">Outreach pending.</p>
-                      )}
-                    {lead.fit_reasons.length > 0 && (
-                      <div>
-                        <p className="font-medium text-green-700 dark:text-green-400 mb-1">
-                          Fit Reasons
-                        </p>
-                        <ul className="list-disc list-inside text-xs space-y-1">
-                          {lead.fit_reasons.map((r, i) => (
-                            <li key={i}>{r}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    {lead.concerns.length > 0 && (
-                      <div>
-                        <p className="font-medium text-yellow-700 dark:text-yellow-400 mb-1">
-                          Concerns
-                        </p>
-                        <ul className="list-disc list-inside text-xs space-y-1">
-                          {lead.concerns.map((c, i) => (
-                            <li key={i}>{c}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    {lead.source_summary && (
-                      <div>
-                        <p className="font-medium mb-1">Source Summary</p>
-                        <p className="text-xs text-gray-700 dark:text-gray-300">
-                          {lead.source_summary}
-                        </p>
-                      </div>
-                    )}
-                    {lead.outreach_drafts?.[0] && (
-                      <div>
-                        <div className="flex items-center gap-2 mb-2">
-                          <p className="font-medium">Outreach Drafts</p>
-                          <span
-                            className={`text-xs px-2 py-0.5 rounded-full ${
-                              lead.outreach_drafts[0].status === "approved"
-                                ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
-                                : "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-                            }`}
-                          >
-                            {lead.outreach_drafts[0].status || "draft"}
-                          </span>
-                          {isReviewer &&
-                            lead.qualification_status === "qualified" &&
-                            lead.outreach_drafts[0].status === "draft" && (
-                              <button
-                                onClick={() => {
-                                  setApproveError(null);
-                                  setApproving({ lead, draft: lead.outreach_drafts[0] });
-                                }}
-                                className="ml-auto text-xs px-3 py-1 border border-green-300 text-green-700 rounded hover:bg-green-50 dark:border-green-800 dark:text-green-400 dark:hover:bg-green-900/20"
-                              >
-                                Approve
-                              </button>
-                            )}
-                        </div>
-                        {[1, 2, 3].map((n) => {
-                          const draft = lead.outreach_drafts[0];
-                          const subject = draft[
-                            `email_${n}_subject` as keyof OutreachDraft
-                          ] as string;
-                          const body = draft[
-                            `email_${n}_body` as keyof OutreachDraft
-                          ] as string;
-                          const personalization = draft[
-                            `email_${n}_personalization` as keyof OutreachDraft
-                          ] as string;
-                          if (!subject) return null;
-                          return (
-                            <div
-                              key={n}
-                              className="mb-3 bg-white dark:bg-gray-800 p-3 rounded border"
-                            >
-                              <p className="text-xs font-medium">
-                                Email {n}: {subject}
-                              </p>
-                              <p className="text-xs text-gray-600 dark:text-gray-400 mt-1 whitespace-pre-wrap">
-                                {body}
-                              </p>
-                              {personalization && (
-                                <p className="text-xs text-blue-600 dark:text-blue-400 mt-1 italic">
-                                  Personalization: {personalization}
-                                </p>
-                              )}
-                            </div>
-                          );
-                        })}
-                        {lead.outreach_drafts[0].linkedin_message && (
-                          <div className="bg-white dark:bg-gray-800 p-3 rounded border">
-                            <p className="text-xs font-medium">LinkedIn Message</p>
-                            <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
-                              {lead.outreach_drafts[0].linkedin_message}
-                            </p>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            ))}
-            {visibleLeads.length === 0 && run.status === "running" && (
-              <p className="text-sm text-gray-500">
-                Waiting for the agent to qualify leads...
-              </p>
-            )}
-            {visibleLeads.length === 0 && run.status !== "running" && (
-              <p className="text-sm text-gray-500">No leads found.</p>
-            )}
-          </div>
+        <section id="panel-leads" role="tabpanel" aria-labelledby="tab-leads" className="mt-6 space-y-3">
+          {visibleLeads.map((lead) => (
+            <LeadCard
+              key={lead.id}
+              lead={lead}
+              runStatus={run.status}
+              isReviewer={isReviewer}
+              expanded={expandedLead === lead.id}
+              onToggle={() => setExpandedLead(expandedLead === lead.id ? null : lead.id)}
+              onPromote={() => setPromotingLead(lead)}
+              onApprove={(draft) => {
+                setApproveError(null);
+                setApproving({ lead, draft });
+              }}
+            />
+          ))}
+          {visibleLeads.length === 0 && (
+            <p className="text-sm text-muted">
+              {run.status === "running" ? "Waiting for the agent to qualify leads…" : "No leads found."}
+            </p>
+          )}
         </section>
       )}
 
       {activeTab === "tools" && (
-        <section>
-          <div className="space-y-1">
-            {toolCalls.map((tc) => (
-              <div
-                key={tc.id}
-                className={`flex items-start gap-3 p-2 rounded text-xs ${
-                  tc.status === "error" ? "bg-red-50 dark:bg-red-900/10" : ""
-                }`}
-              >
-                <span
-                  className={`mt-0.5 w-2 h-2 rounded-full shrink-0 ${
-                    tc.status === "success" ? "bg-green-500" : "bg-red-500"
-                  }`}
-                />
-                <div className="min-w-0 flex-1">
-                  <span className="font-medium" title={tc.tool_name}>
-                    {TOOL_LABELS[tc.tool_name] ?? tc.tool_name}
-                  </span>
-                  {tc.purpose && (
-                    <span className="text-gray-500 ml-2">{tc.purpose}</span>
-                  )}
-                  {tc.error_message && (
-                    <p className="text-red-600 mt-0.5">{tc.error_message}</p>
-                  )}
-                </div>
-                <span className="text-gray-400 shrink-0">
-                  {new Date(tc.created_at).toLocaleTimeString()}
-                </span>
-              </div>
-            ))}
-            {toolCalls.length === 0 && run.status === "running" && (
-              <p className="text-sm text-gray-500">Waiting for tool calls...</p>
-            )}
-            {toolCalls.length === 0 && run.status !== "running" && (
-              <p className="text-sm text-gray-500">No tool calls recorded.</p>
-            )}
-          </div>
+        <section id="panel-tools" role="tabpanel" aria-labelledby="tab-tools" className="mt-8">
+          <ToolCallList toolCalls={toolCalls} runStatus={run.status} />
         </section>
       )}
 
@@ -908,9 +983,9 @@ export default function RunPage() {
       {confirmingCancel && (
         <ConfirmModal
           title="Cancel this run?"
-          message="Are you sure you want to cancel this run? Any leads already found will be saved, but the research will stop."
-          cancelLabel="Keep Running"
-          confirmLabel="Cancel Run"
+          message="Any leads already found will be saved, but the research will stop."
+          cancelLabel="Keep running"
+          confirmLabel="Cancel run"
           tone="red"
           busy={cancelling}
           error={cancelError}
@@ -925,7 +1000,7 @@ export default function RunPage() {
       {promotedNotice && (
         <ConfirmModal
           title="Lead promoted"
-          message="Lead promoted to qualified. This action has been logged."
+          message="The lead is now qualified. This action has been logged."
           confirmLabel="OK"
           onConfirm={() => setPromotedNotice(false)}
           onClose={() => setPromotedNotice(false)}
@@ -935,9 +1010,9 @@ export default function RunPage() {
       {approving && (
         <ConfirmModal
           title="Approve outreach"
-          message={`Approve this outreach for ${approving.lead.company_name}? Approved outreach is ready for external use.`}
+          message={`Approve this outreach for ${approving.lead.company_name}? Approved outreach is ready for a person to send. Nothing is sent automatically.`}
           cancelLabel="Cancel"
-          confirmLabel="Approve Outreach"
+          confirmLabel="Approve outreach"
           tone="green"
           busy={approveBusy}
           error={approveError}
