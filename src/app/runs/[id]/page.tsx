@@ -370,7 +370,36 @@ function Evidence({ lead }: { lead: Lead }) {
   );
 }
 
+// Copies text to the clipboard and briefly confirms it (approved outreach only)
+function CopyButton({ text, label }: { text: string; label: string }) {
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setState("copied");
+    } catch {
+      setState("failed");
+    }
+    setTimeout(() => setState("idle"), 1500);
+  };
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      aria-label={`Copy ${label}`}
+      className="ml-auto inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted transition-colors hover:bg-line/40 hover:text-ink"
+    >
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+        <rect x="9" y="9" width="13" height="13" rx="2" />
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+      </svg>
+      <span aria-live="polite">{state === "copied" ? "Copied!" : state === "failed" ? "Copy failed" : "Copy"}</span>
+    </button>
+  );
+}
+
 function OutreachDraftBody({ draft }: { draft: OutreachDraft }) {
+  const canCopy = draft.status === "approved";
   return (
     <div className="mt-3 space-y-3">
       {[1, 2, 3].map((n) => {
@@ -380,7 +409,10 @@ function OutreachDraftBody({ draft }: { draft: OutreachDraft }) {
         if (!subject) return null;
         return (
           <div key={n} className="rounded-lg border border-line bg-surface px-4 py-3">
-            <p className="text-xs text-muted">Email {n}</p>
+            <div className="flex items-center gap-2">
+              <p className="text-xs text-muted">Email {n}</p>
+              {canCopy && <CopyButton text={`Subject: ${subject}\n\n${body}`} label={`email ${n}`} />}
+            </div>
             <p className="mt-0.5 text-sm font-medium">{subject}</p>
             <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-ink/85">{body}</p>
             {personalization && (
@@ -391,7 +423,10 @@ function OutreachDraftBody({ draft }: { draft: OutreachDraft }) {
       })}
       {draft.linkedin_message && (
         <div className="rounded-lg border border-line bg-surface px-4 py-3">
-          <p className="text-xs text-muted">LinkedIn message</p>
+          <div className="flex items-center gap-2">
+            <p className="text-xs text-muted">LinkedIn message</p>
+            {canCopy && <CopyButton text={draft.linkedin_message} label="LinkedIn message" />}
+          </div>
           <p className="mt-1 text-sm leading-relaxed text-ink/85">{draft.linkedin_message}</p>
         </div>
       )}
