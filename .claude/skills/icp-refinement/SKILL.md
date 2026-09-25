@@ -11,7 +11,7 @@ Use this guide to turn a vague qualification objective into concrete ICP criteri
 
 The agent should understand who counts as a good-fit company before it spends tool calls on discovery and scraping.
 
-## Minimum Criteria To Clarify
+## Minimum Criteria To Define
 
 - Target company type
 - Industry or niche
@@ -61,6 +61,6 @@ The agent should produce a short ICP object before searching:
 ## Rules
 
 - Do not treat every user preference as a hard filter.
-- Ask for clarification if the objective is too vague to search.
+- Do not ask for clarification: the run is automated and no one can answer. If the objective is vague, refine it with your best judgment from what the user actually wrote, keep criteria broad where the user was broad, and set anything the user did not state (for example buyer persona or business problem) to "Not specified by user" rather than inventing it.
 - Preserve specific constraints the user gives.
 - Keep the ICP narrow enough to search, but not so narrow that the agent cannot find leads.

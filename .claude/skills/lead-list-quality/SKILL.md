@@ -9,7 +9,7 @@ Use this guide to check the quality of the final lead list before submission.
 
 ## Required Checks
 
-- The list contains 10 qualified companies.
+- The list contains the requested number of qualified companies (the run's lead target), or explains the shortfall.
 - Each company has a name and domain.
 - Each company has qualification reasoning.
 - Each company has source context.
@@ -31,6 +31,6 @@ Use this guide to check the quality of the final lead list before submission.
 
 ## Pass Standard
 
-The submitted list should include 10 qualified companies that pass the core checks above.
+The submitted list should include the requested number of qualified companies (the run's lead target) that pass the core checks above.
 
-If the agent cannot find 10 qualified companies from the first candidate pool, it should either search again within the tool-call limit or return fewer leads with a clear explanation.
+If the agent cannot reach the lead target from the first candidate pool, it should either search again with another term from the saved search plan (while discovery calls and candidate budget remain) or return fewer leads with a clear explanation. Never add weaker leads to reach the number.

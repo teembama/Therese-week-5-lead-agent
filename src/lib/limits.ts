@@ -18,6 +18,10 @@ export const MAX_SCRAPE_ATTEMPTS_PER_URL = 2;
 // Same limit /api/validate applies; enforced again at run creation so a direct API call can't skip it
 export const MAX_OBJECTIVE_LENGTH = 1000;
 
+// Shared by /api/validate and POST /api/runs so the user sees the same wording either way
+export const MAX_LEADS_MESSAGE = `You can request a maximum of ${MAX_LEADS} leads per run.`;
+export const LEAD_TARGET_RANGE_MESSAGE = `Lead target must be a whole number between 1 and ${MAX_LEADS}.`;
+
 // A running run whose updated_at is older than this is treated as orphaned (its process died).
 // runAgent refreshes updated_at every HEARTBEAT_INTERVAL_MS, so a live run never reaches it.
 export const STALE_RUN_MS = 35 * 60 * 1000;
@@ -36,11 +40,11 @@ export function parseRunRequest(
   // Only an absent lead target defaults to the maximum; an explicit null or other value is checked
   const raw = body.leadTarget === undefined ? MAX_LEADS : body.leadTarget;
   if (typeof raw === "number" && Number.isInteger(raw) && raw > MAX_LEADS) {
-    return { ok: false, error: `You can request a maximum of ${MAX_LEADS} leads per run.` };
+    return { ok: false, error: MAX_LEADS_MESSAGE };
   }
   const leadTarget = parseLeadTarget(raw);
   if (leadTarget === null) {
-    return { ok: false, error: `Lead target must be a whole number between 1 and ${MAX_LEADS}.` };
+    return { ok: false, error: LEAD_TARGET_RANGE_MESSAGE };
   }
   return { ok: true, objective, leadTarget };
 }

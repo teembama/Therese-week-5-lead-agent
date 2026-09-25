@@ -103,10 +103,10 @@ Calls the Apify LinkedIn company search actor `harvestapi/linkedin-company-searc
 **Candidate budget:** `candidate_limit = lead_limit × 4` (target 5 → 20; max 10 → 40), set in `POST /api/runs`, which rejects lead targets that are not whole numbers from 1 to 10.
 
 ### scrape_company
-Calls the Firecrawl scrape endpoint; truncates content to 4000 chars. Enforces the **scrape limit**: every attempt counts, each URL may be scraped once (one retry after a failure), and calls past the limit are rejected.
+Calls the Firecrawl scrape endpoint; truncates content to 4000 chars. **Only scrapes companies discovered in this run**: their website domain (any page or subdomain) or their exact LinkedIn page; any other URL is rejected before budget is used, so a page cannot steer the agent to another site. Enforces the **scrape limit**: every attempt counts, each URL may be scraped once (one retry after a failure), and calls past the limit are rejected.
 
 ### save_lead
-Enforces the **qualified-lead limit** (counting leads already saved for the run) and rejects **duplicate companies** (same normalized domain, or same name if no domain). Inserts the lead, its sources and its outreach (qualified leads only). A failed lead insert releases the reservation so one retry can succeed; a failure after the lead row exists is reported as a partial save.
+Enforces the **qualified-lead limit** (counting leads already saved for the run) and rejects **duplicate companies** (same normalized domain, or same name if no domain). Rejects `not_qualified` leads (they are skipped, not stored). Inserts the lead, its sources and its outreach (qualified leads only). **Retries are safe**: before inserting, it looks up the run's existing lead for the same domain (or name); if an earlier save stopped part-way, a retry adds only the missing sources/outreach instead of a second lead, and a complete lead is rejected as a duplicate. A failed lead insert releases the qualified-lead reservation.
 
 ### log_tool_call
 Optional agent narrative. Stored with `tool_name = "agent_note"`, so it can never be mistaken for, or impersonate, an application-logged tool call.

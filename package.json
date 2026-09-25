@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --import tsx --test tests/agent-tools.test.ts tests/cancel-run.test.ts tests/run-lifecycle.test.ts"
+    "test": "node --import tsx --test tests/agent-tools.test.ts tests/cancel-run.test.ts tests/run-lifecycle.test.ts tests/objective-validation.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.278",

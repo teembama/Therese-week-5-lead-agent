@@ -77,6 +77,20 @@ class MemoryStore implements RunStore {
   async heartbeat(id: string) {
     if (this.runs.get(id)?.status === "running") this.heartbeats.push(id);
   }
+  async findLead(runId: string, domain: string | null, name: string) {
+    const l = this.leads.find(
+      (x) =>
+        x.run_id === runId &&
+        (domain ? x.company_domain === domain : String(x.company_name).trim().toLowerCase() === name.trim().toLowerCase())
+    );
+    return l ? { id: String(l.id), qualification_status: String(l.qualification_status) } : null;
+  }
+  async leadParts(leadId: string) {
+    return {
+      sources: this.sources.filter((s) => s.lead_id === leadId).length,
+      outreach: this.outreach.some((o) => o.lead_id === leadId),
+    };
+  }
   async insertLead(row: Row) {
     await new Promise((r) => setTimeout(r, 5)); // real inserts are async; lets parallel calls interleave
     const id = `lead-${this.nextId++}`;
@@ -182,6 +196,12 @@ async function setup(store: MemoryStore, runId: string, fetchImpl: typeof fetch,
     ctx.usage.toolCalls = 0;
   }
   return { ctx, tools, call };
+}
+
+// For tests of scrape limits in isolation: mark hosts as discovered without running discovery
+// (the scope rule itself is tested against real discover_companies results below)
+function allowScrape(ctx: RunContext, ...hosts: string[]) {
+  for (const h of hosts) ctx.allowedScrapeHosts.add(h);
 }
 
 const OUTREACH = {
@@ -400,7 +420,8 @@ test("a one-result budget still allows one call (per-call cap floor of 1)", asyn
 test("scrape limit is enforced and each URL is scraped once", async () => {
   store.addRun("A", { scrape_limit: 2 });
   const f = makeFetch();
-  const { call } = await setup(store, "A", f.impl);
+  const { ctx, call } = await setup(store, "A", f.impl);
+  allowScrape(ctx, "a.com", "b.com", "c.com");
 
   assert.equal((await call("scrape_company", { url: "https://a.com" })).isError, false);
   const dup = await call("scrape_company", { url: "https://www.a.com/" });
@@ -417,6 +438,7 @@ test("a failed scrape may be retried once, and every attempt counts", async () =
   store.addRun("A", { scrape_limit: 10 });
   const f = makeFetch({ firecrawlStatus: () => 403 });
   const { ctx, call } = await setup(store, "A", f.impl);
+  allowScrape(ctx, "a.com");
   assert.equal((await call("scrape_company", { url: "https://a.com" })).isError, true);
   assert.equal((await call("scrape_company", { url: "https://a.com" })).isError, true);
   const third = await call("scrape_company", { url: "https://a.com" });
@@ -545,6 +567,7 @@ test("tools stop with a 'stopped' reason when the run finished rather than being
 test("overall tool-call cap rejects further calls", async () => {
   store.addRun("A");
   const { ctx, call } = await setup(store, "A", makeFetch().impl);
+  allowScrape(ctx, "a.com", "b.com");
   ctx.limits.maxToolCalls = 2;
   await call("log_tool_call", { about: "a", note: "b" });
   await call("scrape_company", { url: "https://a.com" });
@@ -557,7 +580,8 @@ test("overall tool-call cap rejects further calls", async () => {
 
 test("successful tool calls are logged by the application with safe summaries", async () => {
   store.addRun("A");
-  const { call } = await setup(store, "A", makeFetch().impl);
+  const { ctx, call } = await setup(store, "A", makeFetch().impl);
+  allowScrape(ctx, "acme.com");
   await call("discover_companies", { search_query: "q1", max_results: 5 });
   await call("scrape_company", { url: "https://acme.com/about?token=abc&email=jane@example.com" });
 
@@ -972,4 +996,143 @@ test("needs_review leads (including size-band downgrades) do not need source rec
   const downgraded = await bands.call("save_lead", { ...lead("Straddle Co", "straddle.io"), sources: [] });
   assert.equal(downgraded.isError, false, downgraded.text);
   assert.match(downgraded.text, /Saved as needs_review instead of qualified/);
+});
+
+// --- Batch 2: scrape scope, not_qualified, retry-safe saves ---
+
+// Discovery returns company1..3 (www.companyN.com, linkedin.com/company/companyN) plus a
+// denylisted profile, so the allowed scrape targets come from real discover_companies results
+async function setupDiscovered() {
+  store.addRun("A", { candidate_limit: 20, scrape_limit: 20 });
+  const f = makeFetch({
+    returnCount: () => 3,
+    extraResults: [{ name: "Glassdoor", website: "https://www.glassdoor.com/x", linkedinUrl: "https://www.linkedin.com/company/glassdoor" }],
+  });
+  const s = await setup(store, "A", f.impl);
+  const res = await s.call("discover_companies", { search_query: "q", max_results: 10 });
+  assert.equal(res.isError, false, res.text);
+  return { ...s, f };
+}
+
+test("scrape_company rejects URLs that are not a discovered company's website or LinkedIn page", async () => {
+  const { ctx, call, f } = await setupDiscovered();
+  const rejected = [
+    "https://attacker.example/steal?data=secret",
+    "https://company1.com.evil.io/",
+    "https://notcompany1.com/",
+    "https://www.linkedin.com/company/someone-else",
+    "https://www.linkedin.com/in/jane-doe",
+    "https://www.glassdoor.com/x", // discovered but filtered out as a non-company domain
+  ];
+  for (const url of rejected) {
+    const res = await call("scrape_company", { url });
+    assert.equal(res.isError, true, url);
+    assert.match(res.text, /is not the website or LinkedIn page of a company discovered in this run/, url);
+    assert.match(store.toolCalls.at(-1)?.error_message ?? "", /^scope:/, url);
+  }
+  assert.equal(f.calls.filter((c) => c.url.includes("firecrawl")).length, 0, "no Firecrawl request for rejected URLs");
+  assert.equal(ctx.usage.scrapes, 0, "rejected URLs cost no scrape budget");
+});
+
+test("scrape_company accepts a discovered company's website (any page or subdomain) and its LinkedIn page", async () => {
+  const { call, f } = await setupDiscovered();
+  for (const url of [
+    "https://www.company1.com/about",
+    "https://company2.com/",
+    "https://blog.company3.com/post",
+    "https://www.linkedin.com/company/company1/about/",
+  ]) {
+    const res = await call("scrape_company", { url });
+    assert.equal(res.isError, false, `${url}: ${res.text}`);
+  }
+  assert.equal(f.calls.filter((c) => c.url.includes("firecrawl")).length, 4);
+});
+
+test("scrape_company rejects everything before any discovery has run", async () => {
+  store.addRun("A");
+  const f = makeFetch();
+  const { call } = await setup(store, "A", f.impl);
+  const res = await call("scrape_company", { url: "https://acme.com" });
+  assert.equal(res.isError, true);
+  assert.equal(f.calls.length, 0);
+});
+
+test("save_lead rejects not_qualified leads before writing anything", async () => {
+  store.addRun("A");
+  const { ctx, call } = await setup(store, "A", makeFetch().impl);
+  const res = await call("save_lead", lead("Nope Co", "nope.io", "not_qualified"));
+  assert.equal(res.isError, true);
+  assert.match(res.text, /is not_qualified, so it is not saved/);
+  assert.match(store.toolCalls.at(-1)?.error_message ?? "", /^validation:/);
+  assert.equal(store.leads.length, 0);
+  assert.equal(ctx.usage.qualified, 0);
+});
+
+test("a save that failed on its sources is completed by a retry, without a duplicate lead", async () => {
+  store.addRun("A");
+  const { ctx, call } = await setup(store, "A", makeFetch().impl);
+  const realInsertSources = store.insertSources.bind(store);
+  store.insertSources = async () => {
+    throw new Error("connection reset");
+  };
+  const first = await call("save_lead", lead("Acme", "acme.com"));
+  assert.equal(first.isError, true);
+  assert.match(first.text, /sources failed to save\. Call save_lead again with the same data to finish saving it/);
+  assert.equal(store.leads.length, 1, "the lead row was written");
+  assert.equal(store.outreach.length, 0, "stopped before outreach");
+
+  store.insertSources = realInsertSources;
+  const retry = await call("save_lead", lead("Acme", "acme.com"));
+  assert.equal(retry.isError, false, retry.text);
+  assert.match(retry.text, /Finished saving Acme: the lead already existed .*added its sources and outreach/);
+  assert.equal(store.leads.length, 1, "no duplicate lead");
+  assert.equal(store.sources.length, 1);
+  assert.equal(store.outreach.length, 1);
+  assert.equal(ctx.usage.qualified, 1, "counted once toward the qualified target");
+
+  const again = await call("save_lead", lead("Acme", "acme.com"));
+  assert.equal(again.isError, true);
+  assert.match(again.text, /already saved in this run/);
+  assert.equal(store.leads.length, 1);
+});
+
+test("a save that failed on its outreach is completed by a retry, without duplicating sources", async () => {
+  store.addRun("A");
+  const { call } = await setup(store, "A", makeFetch().impl);
+  const realInsertOutreach = store.insertOutreach.bind(store);
+  store.insertOutreach = async () => {
+    throw new Error("timeout");
+  };
+  const first = await call("save_lead", lead("Beta", "beta.io"));
+  assert.match(first.text, /outreach failed to save/);
+  store.insertOutreach = realInsertOutreach;
+
+  const retry = await call("save_lead", lead("Beta", "beta.io"));
+  assert.equal(retry.isError, false, retry.text);
+  assert.match(retry.text, /added its outreach/);
+  assert.equal(store.leads.length, 1);
+  assert.equal(store.sources.length, 1, "sources were not written twice");
+  assert.equal(store.outreach.length, 1);
+});
+
+test("a lead already in the database for this run is not saved again, even if it is not in memory", async () => {
+  store.addRun("A");
+  store.leads.push({ id: "old", run_id: "A", company_name: "Acme", company_domain: "acme.com", qualification_status: "qualified" });
+  store.sources.push({ lead_id: "old", url: "https://acme.com" });
+  store.outreach.push({ lead_id: "old" });
+  const { call } = await setup(store, "A", makeFetch().impl);
+  const res = await call("save_lead", lead("Acme", "https://www.acme.com/"));
+  assert.equal(res.isError, true);
+  assert.match(res.text, /already saved in this run/);
+  assert.equal(store.leads.length, 1);
+});
+
+test("a retry with a different status does not change the saved lead", async () => {
+  store.addRun("A");
+  const { call } = await setup(store, "A", makeFetch().impl);
+  await call("save_lead", lead("Maybe", "maybe.io", "needs_review"));
+  const res = await call("save_lead", lead("Maybe", "maybe.io", "qualified"));
+  assert.equal(res.isError, true);
+  assert.match(res.text, /already saved in this run \(as needs_review\)/);
+  assert.equal(store.leads[0].qualification_status, "needs_review");
 });

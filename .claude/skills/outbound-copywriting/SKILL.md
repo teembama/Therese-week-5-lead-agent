@@ -37,7 +37,7 @@ Open with a relevant observation from the company context, connect it to the off
 
 ### Email 2
 
-Add another relevant angle, such as a workflow bottleneck, scaling challenge, or operational pattern that connects to AI automation support.
+Add a second angle only if the retrieved evidence supports it: a workflow, scaling signal, or operational detail that the company's own website or LinkedIn profile actually describes, connected to AI automation support. Do not speculate about pain points or challenges the sources do not show. If the evidence supports no second angle, briefly restate the first observation with a different, low-pressure ask.
 
 ### Email 3
 
