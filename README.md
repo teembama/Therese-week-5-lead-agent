@@ -67,6 +67,6 @@ Local runs use real Apify, Firecrawl and Claude credits: a 3-lead run typically 
 
 ## Roles
 
-- **researcher**: starts runs and can cancel their own runs
-- **reviewer**: promotes needs-review leads (with a reason) and approves outreach
+- **researcher**: starts runs, can cancel their own runs, and can regenerate rejected outreach (once per lead)
+- **reviewer**: promotes needs-review leads (with a reason), and approves or rejects outreach
 - **admin**: everything, including cancelling any run

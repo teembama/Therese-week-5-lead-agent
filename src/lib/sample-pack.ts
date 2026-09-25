@@ -21,6 +21,7 @@ export interface SamplePackOutreach {
   email_3_personalization: string;
   linkedin_message: string;
   status?: string;
+  created_at?: string;
 }
 
 export interface SamplePackLead {
@@ -264,7 +265,11 @@ export function buildSamplePack(run: SamplePackRun, leads: SamplePackLead[], gen
       out.push("");
     }
 
-    const draft = lead.outreach_drafts?.[0];
+    // The latest draft that was not rejected (a rejected draft is never exported)
+    const draft = [...(lead.outreach_drafts ?? [])]
+      .filter((d) => d.status !== "rejected")
+      .sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? ""))
+      .at(-1);
     if (draft) {
       out.push(`#### Outreach${draft.status ? ` (${draft.status})` : ""}`);
       out.push("");

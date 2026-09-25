@@ -43,6 +43,7 @@ const BADGE_STYLES: Record<string, string> = {
   completed: "bg-success-soft text-success",
   qualified: "bg-success-soft text-success",
   approved: "bg-success-soft text-success",
+  rejected: "bg-danger-soft text-danger",
   failed: "bg-danger-soft text-danger",
   cancelled: "bg-neutral-soft text-neutral",
   needs_review: "bg-warning-soft text-warning",

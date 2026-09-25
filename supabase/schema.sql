@@ -119,3 +119,7 @@ create table public.agent_tool_calls (
 --   20260925120100_one_running_run_per_user.sql
 --     create unique index lead_runs_one_running_per_user on public.lead_runs (user_id)
 --       where status = 'running' and user_id is not null;
+--   20260925130000_outreach_rejection_regeneration.sql
+--     outreach_drafts: + rejection_reason, rejected_by, rejected_at, regenerated_from (fk to
+--       outreach_drafts.id), regeneration_direction; status check ('draft', 'approved', 'rejected');
+--       unique index outreach_drafts_one_regeneration_per_lead on (lead_id) where regenerated_from is not null

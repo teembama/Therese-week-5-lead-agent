@@ -124,27 +124,46 @@ function secret(): string | null {
   return s && s.length >= MIN_SECRET_LENGTH ? s : null;
 }
 
-function tokenPayload(leadId: string, userId: string, reason: string, expires: number): string {
-  const reasonHash = createHash("sha256").update(reason).digest("base64url");
-  return `promotion-reason|${leadId}|${userId}|${reasonHash}|${expires}`;
+// purpose separates token kinds, so a token issued for one action can never authorize another
+export type TokenPurpose = "promotion-reason" | "rejection-reason" | "regeneration-direction";
+
+function tokenPayload(purpose: TokenPurpose, subjectId: string, userId: string, text: string, expires: number): string {
+  const textHash = createHash("sha256").update(text).digest("base64url");
+  return `${purpose}|${subjectId}|${userId}|${textHash}|${expires}`;
 }
 
-export function createValidationToken(leadId: string, userId: string, reason: string, now = Date.now()): string | null {
+export function createPurposeToken(purpose: TokenPurpose, subjectId: string, userId: string, text: string, now = Date.now()): string | null {
   const key = secret();
   if (!key) return null;
   const expires = now + TOKEN_TTL_MS;
-  const sig = createHmac("sha256", key).update(tokenPayload(leadId, userId, reason, expires)).digest("base64url");
+  const sig = createHmac("sha256", key).update(tokenPayload(purpose, subjectId, userId, text, expires)).digest("base64url");
   return `${expires}.${sig}`;
 }
 
-export function verifyValidationToken(token: unknown, leadId: string, userId: string, reason: string, now = Date.now()): boolean {
+export function verifyPurposeToken(
+  token: unknown,
+  purpose: TokenPurpose,
+  subjectId: string,
+  userId: string,
+  text: string,
+  now = Date.now()
+): boolean {
   const key = secret();
   if (!key || typeof token !== "string") return false;
   const [expiresRaw, sig] = token.split(".");
   const expires = Number(expiresRaw);
   if (!sig || !Number.isFinite(expires) || expires < now) return false;
-  const expected = createHmac("sha256", key).update(tokenPayload(leadId, userId, reason, expires)).digest("base64url");
+  const expected = createHmac("sha256", key).update(tokenPayload(purpose, subjectId, userId, text, expires)).digest("base64url");
   const a = Buffer.from(sig);
   const b = Buffer.from(expected);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+// Promotion tokens (PATCH /api/leads/[id])
+export function createValidationToken(leadId: string, userId: string, reason: string, now = Date.now()): string | null {
+  return createPurposeToken("promotion-reason", leadId, userId, reason, now);
+}
+
+export function verifyValidationToken(token: unknown, leadId: string, userId: string, reason: string, now = Date.now()): boolean {
+  return verifyPurposeToken(token, "promotion-reason", leadId, userId, reason, now);
 }

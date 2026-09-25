@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, type ReactNode } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { Alert, Badge, Button, Card, ExternalLink, Label, Modal } from "@/components/ui";
@@ -28,6 +28,11 @@ interface OutreachDraft {
   email_3_personalization: string;
   linkedin_message: string;
   status: string;
+  created_at?: string;
+  rejection_reason?: string | null;
+  rejected_by?: string | null;
+  regenerated_from?: string | null;
+  regeneration_direction?: string | null;
 }
 
 interface Lead {
@@ -230,6 +235,8 @@ const TOOL_LABELS: Record<string, string> = {
   manual_approval: "Human approval",
   manual_cancel: "Cancelled",
   manual_outreach: "Outreach drafting",
+  manual_rejection: "Outreach rejected",
+  manual_regeneration: "Outreach regenerated",
 };
 
 const APP_LOGGED_TOOLS = new Set(["update_run", "discover_companies", "scrape_company", "save_lead"]);
@@ -363,51 +370,267 @@ function Evidence({ lead }: { lead: Lead }) {
   );
 }
 
+function OutreachDraftBody({ draft }: { draft: OutreachDraft }) {
+  return (
+    <div className="mt-3 space-y-3">
+      {[1, 2, 3].map((n) => {
+        const subject = draft[`email_${n}_subject` as keyof OutreachDraft] as string;
+        const body = draft[`email_${n}_body` as keyof OutreachDraft] as string;
+        const personalization = draft[`email_${n}_personalization` as keyof OutreachDraft] as string;
+        if (!subject) return null;
+        return (
+          <div key={n} className="rounded-lg border border-line bg-surface px-4 py-3">
+            <p className="text-xs text-muted">Email {n}</p>
+            <p className="mt-0.5 text-sm font-medium">{subject}</p>
+            <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-ink/85">{body}</p>
+            {personalization && (
+              <p className="mt-2 border-l-2 border-rose/50 pl-3 text-xs italic text-muted">Personalization: {personalization}</p>
+            )}
+          </div>
+        );
+      })}
+      {draft.linkedin_message && (
+        <div className="rounded-lg border border-line bg-surface px-4 py-3">
+          <p className="text-xs text-muted">LinkedIn message</p>
+          <p className="mt-1 text-sm leading-relaxed text-ink/85">{draft.linkedin_message}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RejectionNote({ draft }: { draft: OutreachDraft }) {
+  if (draft.status !== "rejected") return null;
+  return (
+    <div className="mt-3 rounded-lg border border-danger/25 bg-danger-soft px-4 py-3 text-sm">
+      <p className="font-medium text-danger">Rejected{draft.rejected_by ? ` by ${draft.rejected_by}` : ""}</p>
+      {draft.rejection_reason && <p className="mt-1 leading-relaxed text-ink/85">{draft.rejection_reason}</p>}
+    </div>
+  );
+}
+
 function OutreachView({
   draft,
+  previous,
   canApprove,
   onApprove,
+  canReject,
+  onReject,
+  canRegenerate,
+  regenerationLimitReached,
+  onRegenerate,
 }: {
   draft: OutreachDraft;
+  previous: OutreachDraft[];
   canApprove: boolean;
   onApprove: () => void;
+  canReject: boolean;
+  onReject: () => void;
+  canRegenerate: boolean;
+  regenerationLimitReached: boolean;
+  onRegenerate: () => void;
 }) {
   return (
     <section>
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <Label>Outreach drafts</Label>
         <Badge status={draft.status || "draft"} />
-        {canApprove && (
-          <Button size="sm" variant="success" className="ml-auto" onClick={onApprove}>
-            Approve
-          </Button>
-        )}
+        {draft.regenerated_from && <span className="text-xs text-muted">Regenerated</span>}
+        <div className="ml-auto flex items-center gap-2">
+          {canReject && (
+            <Button size="sm" variant="danger" onClick={onReject}>
+              Reject
+            </Button>
+          )}
+          {canApprove && (
+            <Button size="sm" variant="success" onClick={onApprove}>
+              Approve
+            </Button>
+          )}
+          {draft.status === "rejected" && canRegenerate && !regenerationLimitReached && (
+            <Button size="sm" variant="accent" onClick={onRegenerate}>
+              Regenerate outreach
+            </Button>
+          )}
+          {draft.status === "rejected" && regenerationLimitReached && (
+            <span className="text-xs text-muted">Regeneration limit reached</span>
+          )}
+        </div>
       </div>
-      <div className="mt-3 space-y-3">
-        {[1, 2, 3].map((n) => {
-          const subject = draft[`email_${n}_subject` as keyof OutreachDraft] as string;
-          const body = draft[`email_${n}_body` as keyof OutreachDraft] as string;
-          const personalization = draft[`email_${n}_personalization` as keyof OutreachDraft] as string;
-          if (!subject) return null;
-          return (
-            <div key={n} className="rounded-lg border border-line bg-surface px-4 py-3">
-              <p className="text-xs text-muted">Email {n}</p>
-              <p className="mt-0.5 text-sm font-medium">{subject}</p>
-              <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-ink/85">{body}</p>
-              {personalization && (
-                <p className="mt-2 border-l-2 border-rose/50 pl-3 text-xs italic text-muted">Personalization: {personalization}</p>
-              )}
-            </div>
-          );
-        })}
-        {draft.linkedin_message && (
-          <div className="rounded-lg border border-line bg-surface px-4 py-3">
-            <p className="text-xs text-muted">LinkedIn message</p>
-            <p className="mt-1 text-sm leading-relaxed text-ink/85">{draft.linkedin_message}</p>
-          </div>
-        )}
-      </div>
+      <RejectionNote draft={draft} />
+      {draft.regeneration_direction && (
+        <p className="mt-3 border-l-2 border-rose/50 pl-3 text-xs text-muted">Direction for regeneration: {draft.regeneration_direction}</p>
+      )}
+      <OutreachDraftBody draft={draft} />
+      {previous.map((old) => (
+        <details key={old.id} className="mt-4 rounded-lg border border-line px-4 py-3">
+          <summary className="cursor-pointer text-sm text-muted">
+            Earlier draft ({old.status}){old.rejection_reason ? ` — ${truncate(old.rejection_reason, 80)}` : ""}
+          </summary>
+          <RejectionNote draft={old} />
+          <OutreachDraftBody draft={old} />
+        </details>
+      ))}
     </section>
+  );
+}
+
+// Text feedback checked by Claude Haiku before a confirmation step (outreach rejection and
+// regeneration): the server validates first (validate_only) and returns a short-lived token that
+// the confirmed request sends back
+function FeedbackModal({
+  title,
+  lead,
+  endpoint,
+  field,
+  label,
+  help,
+  placeholder,
+  context,
+  confirmTitle,
+  confirmMessage,
+  confirmLabel,
+  busyLabel,
+  busyMessage,
+  tone,
+  onClose,
+  onDone,
+}: {
+  title: string;
+  lead: Lead;
+  endpoint: string;
+  field: "reason" | "direction";
+  label: string;
+  help: string;
+  placeholder: string;
+  context?: ReactNode;
+  confirmTitle: string;
+  confirmMessage: string;
+  confirmLabel: string;
+  busyLabel: string;
+  busyMessage?: string;
+  tone: "red" | "rose";
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [text, setText] = useState("");
+  const [phase, setPhase] = useState<"edit" | "validating" | "confirm" | "saving">("edit");
+  const [token, setToken] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [example, setExample] = useState<string | null>(null);
+  const busy = phase === "validating" || phase === "saving";
+
+  const send = (extra: Record<string, unknown>) =>
+    fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ [field]: text.trim(), ...extra }),
+    });
+
+  const handleValidate = async () => {
+    setPhase("validating");
+    setError(null);
+    setExample(null);
+    try {
+      const res = await send({ validate_only: true });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(json.error || "Could not check this. Please try again.");
+        setExample(typeof json.example === "string" ? json.example : null);
+        setPhase("edit");
+        return;
+      }
+      setToken(typeof json.validation_token === "string" ? json.validation_token : null);
+      setPhase("confirm");
+    } catch {
+      setError("Could not check this. Please try again.");
+      setPhase("edit");
+    }
+  };
+
+  const handleConfirm = async () => {
+    setPhase("saving");
+    setError(null);
+    try {
+      const res = await send(token ? { validation_token: token } : {});
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(json.error || "Something went wrong. Please try again.");
+        setPhase("confirm");
+        return;
+      }
+      onDone();
+    } catch {
+      setError("Something went wrong. Please try again.");
+      setPhase("confirm");
+    }
+  };
+
+  if (phase === "confirm" || phase === "saving") {
+    return (
+      <ConfirmModal
+        title={confirmTitle}
+        message={phase === "saving" && busyMessage ? busyMessage : confirmMessage}
+        cancelLabel="Back"
+        confirmLabel={confirmLabel}
+        busyLabel={busyLabel}
+        tone={tone}
+        busy={phase === "saving"}
+        error={error}
+        onConfirm={handleConfirm}
+        onClose={() => {
+          setError(null);
+          setPhase("edit");
+        }}
+      />
+    );
+  }
+
+  const inputId = `feedback-${field}`;
+  return (
+    <Modal title={title} onClose={onClose} busy={busy}>
+      <p className="text-sm text-muted">
+        {lead.company_name}
+        {lead.company_domain && ` · ${lead.company_domain}`}
+      </p>
+      {context}
+      <label htmlFor={inputId} className="mt-5 block text-sm font-medium">
+        {label} <span className="text-danger">*</span>
+      </label>
+      <p id={`${inputId}-help`} className="mt-1 text-xs leading-relaxed text-muted">
+        {help}
+      </p>
+      <textarea
+        id={inputId}
+        aria-describedby={`${inputId}-help`}
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value);
+          setToken(null);
+          if (error) setError(null);
+          if (example) setExample(null);
+        }}
+        rows={4}
+        maxLength={1000}
+        placeholder={placeholder}
+        className="mt-2 w-full rounded-lg border border-line-strong bg-surface p-3 text-sm focus:border-rose focus:outline-none focus:ring-2 focus:ring-rose/20"
+        disabled={busy}
+      />
+      {error && (
+        <Alert tone="danger" className="mt-3">
+          {error}
+          {example && <span className="mt-2 block text-ink/90">{example}</span>}
+        </Alert>
+      )}
+      <div className="mt-6 flex justify-end gap-2">
+        <Button size="sm" variant="secondary" onClick={onClose} disabled={busy}>
+          Cancel
+        </Button>
+        <Button size="sm" variant="primary" onClick={handleValidate} disabled={busy || !text.trim()}>
+          {phase === "validating" ? "Checking…" : "Continue"}
+        </Button>
+      </div>
+    </Modal>
   );
 }
 
@@ -422,6 +645,9 @@ function LeadCard({
   outreachFailure,
   generating,
   onGenerateOutreach,
+  isResearcher,
+  onReject,
+  onRegenerate,
 }: {
   lead: Lead;
   runStatus: string;
@@ -433,8 +659,13 @@ function LeadCard({
   outreachFailure: string | null;
   generating: boolean;
   onGenerateOutreach: () => void;
+  isResearcher: boolean;
+  onReject: (draft: OutreachDraft) => void;
+  onRegenerate: (draft: OutreachDraft) => void;
 }) {
-  const draft = lead.outreach_drafts?.[0];
+  const drafts = sortedDrafts(lead);
+  const draft = drafts.at(-1);
+  const regenerationLimitReached = drafts.some((d) => d.regenerated_from);
   const missingOutreach = lead.qualification_status === "qualified" && !draft && runStatus !== "running";
   const panelId = `lead-${lead.id}`;
   return (
@@ -522,14 +753,25 @@ function LeadCard({
           {draft && (
             <OutreachView
               draft={draft}
+              previous={drafts.slice(0, -1).reverse()}
               canApprove={isReviewer && lead.qualification_status === "qualified" && draft.status === "draft"}
               onApprove={() => onApprove(draft)}
+              canReject={isReviewer && draft.status === "draft"}
+              onReject={() => onReject(draft)}
+              canRegenerate={isResearcher && lead.qualification_status === "qualified"}
+              regenerationLimitReached={regenerationLimitReached}
+              onRegenerate={() => onRegenerate(draft)}
             />
           )}
         </div>
       )}
     </Card>
   );
+}
+
+// Oldest first; the last one is the lead's current outreach
+function sortedDrafts(lead: Lead): OutreachDraft[] {
+  return [...(lead.outreach_drafts ?? [])].sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? ""));
 }
 
 function truncate(text: string, max = 200): string {
@@ -809,6 +1051,8 @@ export default function RunPage() {
   const [generatingFor, setGeneratingFor] = useState<string | null>(null);
   const [outreachErrors, setOutreachErrors] = useState<Record<string, string>>({});
   const [approving, setApproving] = useState<{ lead: Lead; draft: OutreachDraft } | null>(null);
+  const [rejecting, setRejecting] = useState<{ lead: Lead; draft: OutreachDraft } | null>(null);
+  const [regenerating, setRegenerating] = useState<{ lead: Lead; draft: OutreachDraft } | null>(null);
   const [approveBusy, setApproveBusy] = useState(false);
   const [approveError, setApproveError] = useState<string | null>(null);
 
@@ -823,6 +1067,7 @@ export default function RunPage() {
   }, []);
 
   const isReviewer = role === "reviewer" || role === "admin";
+  const isResearcher = role === "researcher" || role === "admin";
   // Mirrors the server rule: only the person who started the run, or an admin, can cancel it
   const canCancel = !!data && (role === "admin" || (!!userId && data.run.user_id === userId));
 
@@ -1069,6 +1314,9 @@ export default function RunPage() {
               outreachFailure={outreachFailureFor(lead)}
               generating={generatingFor === lead.id}
               onGenerateOutreach={() => handleGenerateOutreach(lead)}
+              isResearcher={isResearcher}
+              onReject={(draft) => setRejecting({ lead, draft })}
+              onRegenerate={(draft) => setRegenerating({ lead, draft })}
             />
           ))}
           {visibleLeads.length === 0 && (
@@ -1130,6 +1378,61 @@ export default function RunPage() {
           confirmLabel="OK"
           onConfirm={() => setPromotedNotice(null)}
           onClose={() => setPromotedNotice(null)}
+        />
+      )}
+
+      {rejecting && (
+        <FeedbackModal
+          title="Reject outreach"
+          lead={rejecting.lead}
+          endpoint={`/api/outreach/${rejecting.draft.id}/reject`}
+          field="reason"
+          label="Reason for rejecting"
+          help="Say what is wrong with these drafts (e.g. email 2 claims they are hiring, which none of the sources show)."
+          placeholder="What should change, and why…"
+          confirmTitle="Reject outreach?"
+          confirmMessage={`Reject the outreach for ${rejecting.lead.company_name}? A researcher can then regenerate it once.`}
+          confirmLabel="Reject outreach"
+          busyLabel="Rejecting…"
+          tone="red"
+          onClose={() => setRejecting(null)}
+          onDone={() => {
+            setExpandedLead(rejecting.lead.id);
+            setRejecting(null);
+            fetchData();
+          }}
+        />
+      )}
+
+      {regenerating && (
+        <FeedbackModal
+          title="Regenerate outreach"
+          lead={regenerating.lead}
+          endpoint={`/api/outreach/${regenerating.draft.id}/regenerate`}
+          field="direction"
+          label="Direction for regeneration"
+          help="Say what the new drafts should change (e.g. focus more on their onboarding workflow, less on internal ops). New drafts use the same source evidence; each lead can be regenerated once."
+          placeholder="What the new drafts should focus on…"
+          context={
+            <div className="mt-5">
+              <Label>Rejection reason</Label>
+              <p className="mt-2 rounded-lg border border-line bg-canvas px-3 py-2 text-sm leading-relaxed">
+                {regenerating.draft.rejection_reason || "No reason recorded."}
+              </p>
+            </div>
+          }
+          confirmTitle="Regenerate outreach?"
+          confirmMessage={`Write new outreach drafts for ${regenerating.lead.company_name} with this direction? This uses the lead's one regeneration.`}
+          confirmLabel="Regenerate"
+          busyLabel="Regenerating…"
+          busyMessage={`Writing new drafts for ${regenerating.lead.company_name}. This can take up to a minute.`}
+          tone="rose"
+          onClose={() => setRegenerating(null)}
+          onDone={() => {
+            setExpandedLead(regenerating.lead.id);
+            setRegenerating(null);
+            fetchData();
+          }}
         />
       )}
 
