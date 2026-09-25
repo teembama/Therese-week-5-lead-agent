@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --import tsx --test tests/agent-tools.test.ts tests/cancel-run.test.ts"
+    "test": "node --import tsx --test tests/agent-tools.test.ts tests/cancel-run.test.ts tests/run-lifecycle.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.278",
@@ -30,5 +30,8 @@
     "tailwindcss": "^4",
     "tsx": "^4.23.15",
     "typescript": "^5"
+  },
+  "engines": {
+    "node": ">=20.9.0 <23"
   }
 }

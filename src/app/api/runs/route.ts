@@ -1,12 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { getSession, requireRole } from "@/lib/auth";
-import {
-  MAX_LEADS,
-  DEFAULT_AGENT_TURN_LIMIT,
-  parseLeadTarget,
-  candidateLimitFor,
-} from "@/lib/limits";
+import { DEFAULT_AGENT_TURN_LIMIT, parseRunRequest, candidateLimitFor } from "@/lib/limits";
+import { recoverStaleRuns } from "@/lib/stale-runs";
 
 // POST /api/runs — create run and start agent (validation already done by /api/validate)
 export async function POST(req: NextRequest) {
@@ -25,19 +21,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
   }
 
-  const objective = body.objective as string;
-  if (!objective || typeof objective !== "string" || objective.trim().length === 0) {
-    return NextResponse.json({ error: "Objective is required." }, { status: 400 });
+  // Structural checks, enforced even when /api/validate was skipped. The candidate and
+  // scrape budgets derive from the lead target, so it must be bounded here.
+  const parsed = parseRunRequest(body);
+  if (!parsed.ok) {
+    return NextResponse.json({ error: parsed.error }, { status: 400 });
   }
-
-  // The candidate and scrape budgets derive from this, so it must be bounded server-side
-  const leadTarget = parseLeadTarget(body.leadTarget ?? MAX_LEADS);
-  if (leadTarget === null) {
-    return NextResponse.json(
-      { error: `Lead target must be a whole number between 1 and ${MAX_LEADS}.` },
-      { status: 400 }
-    );
-  }
+  const { objective, leadTarget } = parsed;
 
   const candidateLimit = candidateLimitFor(leadTarget);
 
@@ -86,6 +76,14 @@ export async function GET() {
   const user = await getSession();
   if (!user) {
     return NextResponse.json({ error: "Not authenticated." }, { status: 401 });
+  }
+
+  // Resolve runs orphaned by a crash/restart before listing them, so none stays "running" forever
+  try {
+    const recovered = await recoverStaleRuns(supabase);
+    if (recovered.length) console.warn(`Recovered ${recovered.length} stale run(s): ${recovered.join(", ")}`);
+  } catch (err) {
+    console.error("Stale-run recovery failed:", err);
   }
 
   const { data, error } = await supabase

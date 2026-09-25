@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { getSession } from "@/lib/auth";
 import { cancelRun } from "@/lib/cancel-run";
+import { recoverStaleRuns } from "@/lib/stale-runs";
 
 export async function GET(
   _req: NextRequest,
@@ -14,6 +15,13 @@ export async function GET(
 
   const { id } = await params;
 
+  // If this run was orphaned by a crash/restart, resolve it before reading it
+  try {
+    await recoverStaleRuns(supabase, { runId: id });
+  } catch (err) {
+    console.error(`Stale-run recovery failed for run ${id}:`, err);
+  }
+
   // Fetch run
   const { data: run, error: runError } = await supabase
     .from("lead_runs")
@@ -23,24 +31,6 @@ export async function GET(
 
   if (runError || !run) {
     return NextResponse.json({ error: "Run not found" }, { status: 404 });
-  }
-
-  // Stale run detection: if running for more than 35 minutes, mark as failed
-  if (run.status === "running") {
-    const runAge = Date.now() - new Date(run.updated_at || run.created_at).getTime();
-    if (runAge > 35 * 60 * 1000) {
-      await supabase
-        .from("lead_runs")
-        .update({
-          status: "failed",
-          error: "The research took too long and was stopped. Please try again with fewer leads or broader criteria.",
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", id)
-        .eq("status", "running");
-      run.status = "failed";
-      run.error = "The research took too long and was stopped. Please try again with fewer leads or broader criteria.";
-    }
   }
 
   // Fetch leads with sources and outreach

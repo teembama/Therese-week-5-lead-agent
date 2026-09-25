@@ -59,7 +59,7 @@ Claude Agent SDK (query())
 | Website scraping | Firecrawl API | Extracts website content as markdown |
 | Database | Supabase (PostgreSQL) | Stores runs, leads, sources, outreach, tool logs |
 | Input validation | Claude Haiku (via Anthropic SDK) | Validates objective meaningfulness before running |
-| Deployment | Vercel | Hosts the web application |
+| Deployment | Railway (`next start`, Node >=20.9 <23 via package.json `engines`) | Hosts the web application and runs the agent in-process |
 
 ---
 
@@ -194,13 +194,35 @@ If Claude validation API fails: returns 503 "temporarily unavailable" (never sil
 
 ---
 
+## Deployment (Railway)
+
+- **Build / start:** Railway detects Next.js and runs `npm run build` then `npm start` (`next start`, which listens on the `PORT` Railway provides). No `railway.json`, Dockerfile or Nixpacks file is needed.
+- **Node:** `package.json` `engines.node` = `>=20.9.0 <23` (Next 16 needs 20.9+). This is the only Node-version setting.
+- **Database migration:** apply `supabase/migrations/20260924230000_add_cancelled_run_status.sql` before relying on the `cancelled` status.
+- **Stale-run recovery:** a run whose process dies (crash, redeploy) is marked `failed` with an "unexpected stop" message once it has had no heartbeat for 35 minutes. Live runs refresh `updated_at` every 60 s. The check runs at server start (`src/instrumentation.ts`), when the run list loads, and when a run page loads; it never touches completed, failed or cancelled runs.
+
+**Environment variables** (set in Railway; never committed):
+
+| Variable | Used by |
+|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase client (server-side) |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase client (server-side only) |
+| `ANTHROPIC_API_KEY` | Objective validator (Anthropic SDK) and the Claude Agent SDK (read implicitly) |
+| `APIFY_API_TOKEN` | `discover_companies` (LinkedIn company search actor) |
+| `FIRECRAWL_API_KEY` | `scrape_company` |
+| `SESSION_SECRET` | Session cookie signing; at least 32 characters, or sign-in is refused |
+
+`NODE_ENV`, `NEXT_RUNTIME`, `NEXT_PHASE` and `PORT` are set by Next.js / Railway.
+
+---
+
 ## Current Limitations & Known Issues
 
 1. Limits are enforced in the process running the agent, not by database constraints. Recommended (not applied) migration for defence in depth: `create unique index leads_run_domain_uniq on leads (run_id, lower(company_domain)) where company_domain is not null;`
 2. No authentication — single-user system, no ownership checks on run access
 3. save_lead is not atomic — partial failures (lead saved but outreach fails) are reported but not rolled back
 4. No rate limiting on API endpoints
-5. No stale-run detection — if server crashes during a run, status stays "running" indefinitely
+5. A run interrupted by a crash or restart is not resumed: after 35 minutes without a heartbeat it is marked failed (leads it saved are kept) and must be started again
 6. Candidate discovery returns irrelevant results (job boards, social media, government sites) — needs domain denylist filtering
 7. 4000-char Firecrawl truncation can miss important evidence later on the page
 8. Cancellation is cooperative: the model turn in progress when the user cancels still completes (and is billed) before the next tool call stops it

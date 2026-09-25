@@ -15,6 +15,36 @@ export const MAX_TOOL_CALLS_PER_RUN = 120;
 // Each URL may be scraped once, plus one retry after a failed attempt
 export const MAX_SCRAPE_ATTEMPTS_PER_URL = 2;
 
+// Same limit /api/validate applies; enforced again at run creation so a direct API call can't skip it
+export const MAX_OBJECTIVE_LENGTH = 1000;
+
+// A running run whose updated_at is older than this is treated as orphaned (its process died).
+// runAgent refreshes updated_at every HEARTBEAT_INTERVAL_MS, so a live run never reaches it.
+export const STALE_RUN_MS = 35 * 60 * 1000;
+export const HEARTBEAT_INTERVAL_MS = 60 * 1000;
+
+// Structural checks for POST /api/runs (semantic validation stays in /api/validate)
+export function parseRunRequest(
+  body: Record<string, unknown>
+): { ok: true; objective: string; leadTarget: number } | { ok: false; error: string } {
+  const objective = typeof body.objective === "string" ? body.objective.trim() : "";
+  if (!objective) return { ok: false, error: "Objective is required." };
+  if (objective.length > MAX_OBJECTIVE_LENGTH) {
+    return { ok: false, error: `Your objective is too long. Keep it under ${MAX_OBJECTIVE_LENGTH} characters.` };
+  }
+
+  // Only an absent lead target defaults to the maximum; an explicit null or other value is checked
+  const raw = body.leadTarget === undefined ? MAX_LEADS : body.leadTarget;
+  if (typeof raw === "number" && Number.isInteger(raw) && raw > MAX_LEADS) {
+    return { ok: false, error: `You can request a maximum of ${MAX_LEADS} leads per run.` };
+  }
+  const leadTarget = parseLeadTarget(raw);
+  if (leadTarget === null) {
+    return { ok: false, error: `Lead target must be a whole number between 1 and ${MAX_LEADS}.` };
+  }
+  return { ok: true, objective, leadTarget };
+}
+
 // Returns the validated lead target, or null if the value is not an integer in 1..MAX_LEADS
 export function parseLeadTarget(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isInteger(value)) return null;

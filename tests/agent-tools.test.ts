@@ -73,6 +73,10 @@ class MemoryStore implements RunStore {
   async recordCost(id: string, cost: number) {
     this.costs.set(id, cost);
   }
+  heartbeats: string[] = [];
+  async heartbeat(id: string) {
+    if (this.runs.get(id)?.status === "running") this.heartbeats.push(id);
+  }
   async insertLead(row: Row) {
     await new Promise((r) => setTimeout(r, 5)); // real inserts are async; lets parallel calls interleave
     const id = `lead-${this.nextId++}`;

@@ -7,6 +7,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { supabase } from "./supabase";
+import { heartbeatRun } from "./stale-runs";
 import {
   MAX_LEADS,
   MAX_CANDIDATES,
@@ -16,6 +17,7 @@ import {
   MAX_AGENT_TURN_LIMIT,
   MAX_TOOL_CALLS_PER_RUN,
   MAX_SCRAPE_ATTEMPTS_PER_URL,
+  HEARTBEAT_INTERVAL_MS,
   clampLimit,
 } from "./limits";
 
@@ -79,6 +81,8 @@ export interface RunStore {
   // Applies the update only while the run is still "running"
   updateRunIfRunning(runId: string, updates: Record<string, unknown>): Promise<"updated" | "not_running">;
   recordCost(runId: string, cost: number): Promise<void>;
+  // Refreshes updated_at while the run is still "running" (liveness for stale-run recovery)
+  heartbeat(runId: string): Promise<void>;
   insertLead(row: Record<string, unknown>): Promise<string>;
   insertSources(rows: Record<string, unknown>[]): Promise<void>;
   insertOutreach(row: Record<string, unknown>): Promise<void>;
@@ -120,6 +124,9 @@ export const supabaseRunStore: RunStore = {
       .select("id");
     check(error);
     return data && data.length > 0 ? "updated" : "not_running";
+  },
+  async heartbeat(runId) {
+    await heartbeatRun(supabase, runId);
   },
   async recordCost(runId, cost) {
     const { error } = await supabase
@@ -1508,6 +1515,7 @@ Begin by refining the ICP using the icp-refinement skill, then discover and qual
 // The run record (loaded by id) is the only source of the objective and limits
 export async function runAgent(runId: string, store: RunStore = supabaseRunStore) {
   const results = { status: "running", cost: 0 };
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
 
   try {
     const ctx = await createRunContext(runId, store);
@@ -1515,6 +1523,13 @@ export async function runAgent(runId: string, store: RunStore = supabaseRunStore
       console.error(`runAgent: run ${runId} not found or not running; not starting.`);
       return { status: "skipped", cost: 0 };
     }
+
+    // Keep updated_at fresh while this process is alive, so stale-run recovery only ever
+    // catches runs whose process has died
+    heartbeat = setInterval(() => {
+      store.heartbeat(runId).catch((err) => console.error(`runAgent: heartbeat failed for run ${runId}:`, err));
+    }, HEARTBEAT_INTERVAL_MS);
+    heartbeat.unref?.();
 
     // A fresh tool server per run: tools close over this run's context only
     const server = createSdkMcpServer({
@@ -1551,6 +1566,8 @@ export async function runAgent(runId: string, store: RunStore = supabaseRunStore
     } catch (err) {
       console.error(`runAgent: could not mark run ${runId} failed:`, err);
     }
+  } finally {
+    if (heartbeat) clearInterval(heartbeat);
   }
 
   return results;
