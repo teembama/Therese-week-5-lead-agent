@@ -33,7 +33,7 @@ export function AppHeader() {
 
   return (
     <header className="border-b border-line bg-canvas/90 backdrop-blur">
-      <div className="mx-auto flex h-16 max-w-5xl items-center justify-between px-6">
+      <div className="flex h-16 w-full items-center justify-between px-6 sm:px-8 lg:px-10">
         <div className="flex items-center gap-8">
           <Link href="/" className="flex items-baseline gap-2">
             <span className="text-[15px] font-semibold tracking-tight text-ink">Koya Lead Studio</span>
