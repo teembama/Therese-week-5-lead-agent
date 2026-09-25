@@ -59,7 +59,17 @@ test("the model's example is shown as e.g. '...' and the prompt asks for one tie
   );
   assert.ok(!result.ok);
   assert.equal(!result.ok && result.example, "e.g. 'Their LinkedIn profile shows 23 employees, which is within the 10-100 range.'");
-  assert.match(buildPromotionPrompt(ctx), /"example": "<one sentence showing what a good reason could look like for THIS company's concerns/);
+  assert.match(buildPromotionPrompt(ctx), /"example": "<one sentence showing what a good reason could look like for THIS company, either addressing a concern or giving a company-specific justification>"/);
+});
+
+test("the prompt accepts either addressing a concern or a company-specific justification, and still rejects filler", () => {
+  const prompt = buildPromotionPrompt(ctx);
+  assert.match(prompt, /a\. it addresses at least one of the specific concerns listed above/);
+  assert.match(prompt, /b\. it gives a relevant, company-specific justification for qualifying this company despite the concerns/);
+  assert.match(prompt, /Never mark a reason invalid only because it leaves a concern unresolved/);
+  assert.match(prompt, /INVALID if it does not mention anything specific about THIS company/);
+  assert.match(prompt, /"their activities matched what we do"/);
+  assert.match(prompt, /"has potential", "looks good"/);
 });
 
 test("without a model example, a template for the first concern is used", () => {
