@@ -301,7 +301,7 @@ interface Outcome {
 
 const TOOL_PURPOSES: Record<string, string> = {
   update_run: "Update run record",
-  discover_companies: "Company discovery (Apify Google Search)",
+  discover_companies: "Company discovery (LinkedIn Company Search)",
   scrape_company: "Website research (Firecrawl)",
   save_lead: "Save lead",
 };
