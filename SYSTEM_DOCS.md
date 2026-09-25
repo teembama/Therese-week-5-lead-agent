@@ -22,7 +22,8 @@ Browser (Next.js pages)
   ├─ POST /api/validate      Claude Haiku + structural checks → leadTarget, or a 400 with the reason
   ├─ POST /api/runs          structural checks again → lead_runs row → runAgent(runId) in-process
   ├─ GET  /api/runs          run list (runs stale-run recovery first)
-  └─ GET  /api/runs/[id]     run + leads + sources + outreach + tool calls; UI polls every 3 s
+  ├─ GET  /api/runs/[id]     run + leads + sources + outreach + tool calls; UI polls every 3 s
+  └─ PATCH /api/leads/[id]   promote a needs_review lead; the reason is checked by Claude Haiku first
 
 runAgent(runId)  (src/lib/agent.ts, runs inside the Next.js server process)
   ├─ loads objective + limits from the run record (clamped to hard maximums)
@@ -158,10 +159,12 @@ No tool accepts a `run_id`: tools are created per run and write only to that run
 | Start runs | ✓ | | ✓ |
 | View runs, leads, evidence, activity | ✓ | ✓ | ✓ |
 | Cancel a run | own runs | | any |
-| Promote needs_review → qualified (with a reason) | | ✓ | ✓ |
+| Promote needs_review → qualified (with a reason checked by Claude Haiku) | | ✓ | ✓ |
 | Approve outreach | | ✓ | ✓ |
 
 All signed-in users see all runs (a shared team workspace).
+
+**Promotion reasons** (`src/lib/promotion-validation.ts`): Claude Haiku checks that the reason explains why the company fits despite the flagged concerns, is specific to the company or concern, and is not gibberish, a joke or filler ("looks good"). The reason is wrapped in `<reason>` tags and treated as untrusted data. A rejected reason returns Haiku's explanation; if Haiku is unavailable the promotion is refused ("Validation temporarily unavailable…"), with no structural fallback. The UI validates first (`validate_only`), asks the reviewer to confirm, then sends a short-lived signed token bound to the lead, reviewer and exact reason so the confirmed request needs no second model call; without a valid token the route validates again.
 
 ---
 

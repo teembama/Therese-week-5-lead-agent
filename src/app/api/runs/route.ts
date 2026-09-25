@@ -95,5 +95,14 @@ export async function GET() {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json(data);
+  // Leads still awaiting review per run, for the "needs review" indicator in the runs list
+  const { data: pending, error: pendingError } = await supabase
+    .from("leads")
+    .select("run_id")
+    .eq("qualification_status", "needs_review");
+  if (pendingError) console.error("Could not count leads awaiting review:", pendingError.message);
+  const pendingByRun = new Map<string, number>();
+  for (const row of pending ?? []) pendingByRun.set(row.run_id, (pendingByRun.get(row.run_id) ?? 0) + 1);
+
+  return NextResponse.json((data ?? []).map((run) => ({ ...run, needs_review_count: pendingByRun.get(run.id) ?? 0 })));
 }

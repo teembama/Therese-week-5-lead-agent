@@ -2,6 +2,13 @@ import { NextRequest, NextResponse, after } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { getSession, requireRole } from "@/lib/auth";
 import { notifyLeadPromoted } from "@/lib/discord";
+import Anthropic from "@anthropic-ai/sdk";
+import {
+  MAX_REASON_LENGTH,
+  createValidationToken,
+  validatePromotionReason,
+  verifyValidationToken,
+} from "@/lib/promotion-validation";
 
 // PATCH /api/leads/[id] — human reviewer promotes a needs_review lead to qualified
 export async function PATCH(
@@ -39,36 +46,16 @@ export async function PATCH(
   }
 
   const reason = review_reason.trim();
-
-  // Must be at least 10 characters
-  if (reason.length < 10) {
+  if (reason.length > MAX_REASON_LENGTH) {
     return NextResponse.json(
-      { error: "Please provide a more detailed reason (at least 10 characters)." },
-      { status: 400 }
-    );
-  }
-
-  // Must contain at least 3 words
-  const words = reason.split(/\s+/).filter((w) => w.length > 1);
-  if (words.length < 3) {
-    return NextResponse.json(
-      { error: "Please write a complete explanation with at least 3 words." },
-      { status: 400 }
-    );
-  }
-
-  // Check for keyboard mashing (more than 50% non-alpha characters)
-  const alphaRatio = (reason.match(/[a-zA-Z]/g) || []).length / reason.length;
-  if (alphaRatio < 0.5) {
-    return NextResponse.json(
-      { error: "Please provide a meaningful explanation in plain English." },
+      { error: `Please keep the reason under ${MAX_REASON_LENGTH} characters.` },
       { status: 400 }
     );
   }
 
   const { data: lead, error: leadError } = await supabase
     .from("leads")
-    .select("id, run_id, company_name, qualification_status")
+    .select("id, run_id, company_name, company_domain, qualification_status, concerns, fit_reasons")
     .eq("id", id)
     .single();
 
@@ -81,6 +68,40 @@ export async function PATCH(
       { error: "Only leads that need review can be promoted." },
       { status: 409 }
     );
+  }
+
+  // The reason is checked by Claude Haiku (no structural fallback). The UI validates first
+  // (validate_only), asks the reviewer to confirm, then sends the token it received so the
+  // confirmed request does not need a second model call. Without a valid token, it validates here.
+  const validateOnly = body.validate_only === true;
+  if (validateOnly || !verifyValidationToken(body.validation_token, lead.id, user.id, reason)) {
+    const { data: run } = await supabase.from("lead_runs").select("objective").eq("id", lead.run_id).single();
+    const check = await validatePromotionReason(
+      {
+        companyName: lead.company_name,
+        companyDomain: lead.company_domain,
+        concerns: Array.isArray(lead.concerns) ? lead.concerns : [],
+        fitReasons: Array.isArray(lead.fit_reasons) ? lead.fit_reasons : [],
+        objective: run?.objective ?? "",
+        reason,
+      },
+      async (prompt) => {
+        const client = new Anthropic();
+        const response = await client.messages.create({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 200,
+          messages: [{ role: "user", content: prompt }],
+        });
+        return response.content[0]?.type === "text" ? response.content[0].text : "";
+      }
+    );
+    if (!check.ok) {
+      return NextResponse.json({ error: check.error }, { status: check.httpStatus });
+    }
+  }
+
+  if (validateOnly) {
+    return NextResponse.json({ valid: true, validation_token: createValidationToken(lead.id, user.id, reason) });
   }
 
   const { data: updated, error: updateError } = await supabase

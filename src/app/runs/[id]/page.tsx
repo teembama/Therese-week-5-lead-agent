@@ -572,37 +572,82 @@ function ToolCallList({ toolCalls, runStatus }: { toolCalls: ToolCall[]; runStat
 
 function PromoteLeadModal({ lead, onClose, onPromoted }: { lead: Lead; onClose: () => void; onPromoted: () => void }) {
   const [reason, setReason] = useState("");
-  const [submitting, setSubmitting] = useState(false);
+  const [phase, setPhase] = useState<"edit" | "validating" | "confirm" | "saving">("edit");
+  const [token, setToken] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const busy = phase === "validating" || phase === "saving";
 
-  const handleSubmit = async () => {
+  const send = (extra: Record<string, unknown>) =>
+    fetch(`/api/leads/${lead.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ qualification_status: "qualified", review_reason: reason.trim(), ...extra }),
+    });
+
+  // Step 1: the server checks the reason with Claude Haiku; nothing is changed yet
+  const handleValidate = async () => {
     if (!reason.trim()) {
       setError("Please explain why this lead should be qualified.");
       return;
     }
-    setSubmitting(true);
+    setPhase("validating");
     setError(null);
     try {
-      const res = await fetch(`/api/leads/${lead.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ qualification_status: "qualified", review_reason: reason.trim() }),
-      });
+      const res = await send({ validate_only: true });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(json.error || "Could not check the reason. Please try again.");
+        setPhase("edit");
+        return;
+      }
+      setToken(typeof json.validation_token === "string" ? json.validation_token : null);
+      setPhase("confirm");
+    } catch {
+      setError("Could not check the reason. Please try again.");
+      setPhase("edit");
+    }
+  };
+
+  // Step 2: after the reviewer confirms, the promotion is saved
+  const handleConfirm = async () => {
+    setPhase("saving");
+    setError(null);
+    try {
+      const res = await send(token ? { validation_token: token } : {});
       const json = await res.json().catch(() => ({}));
       if (!res.ok) {
         setError(json.error || "Failed to update lead. Please try again.");
+        setPhase("confirm");
         return;
       }
       onPromoted();
     } catch {
       setError("Failed to update lead. Please try again.");
-    } finally {
-      setSubmitting(false);
+      setPhase("confirm");
     }
   };
 
+  if (phase === "confirm" || phase === "saving") {
+    return (
+      <ConfirmModal
+        title="Confirm promotion"
+        message={`Promote ${lead.company_name} to qualified?`}
+        cancelLabel="Back"
+        confirmLabel="Promote lead"
+        tone="rose"
+        busy={phase === "saving"}
+        error={error}
+        onConfirm={handleConfirm}
+        onClose={() => {
+          setError(null);
+          setPhase("edit");
+        }}
+      />
+    );
+  }
+
   return (
-    <Modal title="Mark as qualified" onClose={onClose} busy={submitting}>
+    <Modal title="Mark as qualified" onClose={onClose} busy={busy}>
       <p className="text-sm text-muted">
         {lead.company_name}
         {lead.company_domain && ` · ${lead.company_domain}`}
@@ -618,14 +663,24 @@ function PromoteLeadModal({ lead, onClose, onPromoted }: { lead: Lead; onClose: 
       <label htmlFor="review-reason" className="mt-5 block text-sm font-medium">
         Reason for qualifying <span className="text-danger">*</span>
       </label>
+      <p id="review-reason-help" className="mt-1 text-xs leading-relaxed text-muted">
+        Explain why this company fits despite the flagged concerns (e.g. verified their team is 45 people, within the
+        10-100 range).
+      </p>
       <textarea
         id="review-reason"
+        aria-describedby="review-reason-help"
         value={reason}
-        onChange={(e) => setReason(e.target.value)}
+        onChange={(e) => {
+          setReason(e.target.value);
+          setToken(null);
+          if (error) setError(null);
+        }}
         rows={4}
+        maxLength={1000}
         placeholder="Explain how the concerns above were addressed…"
-        className="mt-1.5 w-full rounded-lg border border-line-strong bg-surface p-3 text-sm focus:border-rose focus:outline-none focus:ring-2 focus:ring-rose/20"
-        disabled={submitting}
+        className="mt-2 w-full rounded-lg border border-line-strong bg-surface p-3 text-sm focus:border-rose focus:outline-none focus:ring-2 focus:ring-rose/20"
+        disabled={busy}
       />
       <p className="mt-1.5 text-xs text-muted">Outreach is not generated automatically for promoted leads.</p>
       {error && (
@@ -635,11 +690,11 @@ function PromoteLeadModal({ lead, onClose, onPromoted }: { lead: Lead; onClose: 
       )}
 
       <div className="mt-6 flex justify-end gap-2">
-        <Button size="sm" variant="secondary" onClick={onClose} disabled={submitting}>
+        <Button size="sm" variant="secondary" onClick={onClose} disabled={busy}>
           Cancel
         </Button>
-        <Button size="sm" variant="primary" onClick={handleSubmit} disabled={submitting || !reason.trim()}>
-          {submitting ? "Saving…" : "Mark as qualified"}
+        <Button size="sm" variant="primary" onClick={handleValidate} disabled={busy || !reason.trim()}>
+          {phase === "validating" ? "Checking reason…" : "Continue"}
         </Button>
       </div>
     </Modal>
@@ -661,7 +716,7 @@ function ConfirmModal({
   message: string;
   confirmLabel: string;
   cancelLabel?: string;
-  tone?: "red" | "green" | "neutral";
+  tone?: "red" | "green" | "rose" | "neutral";
   busy?: boolean;
   error?: string | null;
   onConfirm: () => void;
@@ -961,7 +1016,7 @@ export default function RunPage() {
       {confirmingCancel && (
         <ConfirmModal
           title="Cancel this run?"
-          message="Any leads already found will be saved, but the research will stop."
+          message="Are you sure you want to cancel this run? Any leads found so far will be saved."
           cancelLabel="Keep running"
           confirmLabel="Cancel run"
           tone="red"
@@ -988,10 +1043,10 @@ export default function RunPage() {
       {approving && (
         <ConfirmModal
           title="Approve outreach"
-          message={`Approve this outreach for ${approving.lead.company_name}? Approved outreach is ready for a person to send. Nothing is sent automatically.`}
+          message={`Approve outreach for ${approving.lead.company_name}? This marks the drafts as ready to use.`}
           cancelLabel="Cancel"
           confirmLabel="Approve outreach"
-          tone="green"
+          tone="rose"
           busy={approveBusy}
           error={approveError}
           onConfirm={handleApprove}

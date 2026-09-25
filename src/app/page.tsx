@@ -16,6 +16,48 @@ interface Run {
   objective: string;
   status: string;
   created_at: string;
+  needs_review_count?: number;
+}
+
+type RunFilter = "completed" | "needs_review" | "failed" | "cancelled";
+
+const FILTERS: { key: RunFilter; label: string }[] = [
+  { key: "completed", label: "Completed" },
+  { key: "needs_review", label: "Needs review" },
+  { key: "failed", label: "Failed" },
+  { key: "cancelled", label: "Cancelled" },
+];
+
+const needsReview = (run: Run) => run.status === "completed" && (run.needs_review_count ?? 0) > 0;
+
+function matchesFilter(run: Run, filter: RunFilter | null): boolean {
+  if (!filter) return true;
+  if (filter === "needs_review") return needsReview(run);
+  return run.status === filter;
+}
+
+// Selected pills take the matching status badge colours; "All" uses the rose accent
+const FILTER_ACTIVE: Record<RunFilter | "all", string> = {
+  all: "bg-rose-soft text-rose-deep border-rose/50",
+  completed: "bg-success-soft text-success border-success/40",
+  needs_review: "bg-warning-soft text-warning border-warning/40",
+  failed: "bg-danger-soft text-danger border-danger/40",
+  cancelled: "bg-neutral-soft text-neutral border-neutral/40",
+};
+
+function FilterPill({ label, active, tone, onClick }: { label: string; active: boolean; tone: RunFilter | "all"; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={`rounded-full border px-2.5 py-0.5 text-xs font-medium whitespace-nowrap transition-colors ${
+        active ? FILTER_ACTIVE[tone] : "border-line text-muted hover:border-line-strong hover:text-ink"
+      }`}
+    >
+      {label}
+    </button>
+  );
 }
 
 const EXAMPLE =
@@ -31,6 +73,7 @@ export default function Home() {
   const [error, setError] = useState("");
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [user, setUser] = useState<SessionUser | null>(null);
+  const [filter, setFilter] = useState<RunFilter | null>(null);
   const validateAbort = useRef<AbortController | null>(null);
   const router = useRouter();
 
@@ -122,6 +165,8 @@ export default function Home() {
     setError("");
   };
 
+  const visibleRuns = (runs ?? []).filter((run) => matchesFilter(run, filter));
+
   const buttonLabel =
     phase === "validating" ? "Checking your objective…" : phase === "starting" ? "Starting research…" : "Start research";
 
@@ -210,9 +255,29 @@ export default function Home() {
       )}
 
       <section className="mt-16">
-        <div className="flex items-baseline justify-between">
-          <h2 className="text-xl font-semibold tracking-tight">Past runs</h2>
-          {runs && runs.length > 0 && <span className="text-sm text-muted">{runs.length} total</span>}
+        <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
+          <div className="flex items-baseline gap-3">
+            <h2 className="text-xl font-semibold tracking-tight">Past runs</h2>
+            {runs && runs.length > 0 && (
+              <span className="text-sm text-muted">
+                {filter ? `${visibleRuns.length} of ${runs.length}` : `${runs.length} total`}
+              </span>
+            )}
+          </div>
+          {runs && runs.length > 0 && (
+            <div role="group" aria-label="Filter runs by status" className="flex flex-wrap items-center gap-1.5">
+              <FilterPill label="All" tone="all" active={filter === null} onClick={() => setFilter(null)} />
+              {FILTERS.map((f) => (
+                <FilterPill
+                  key={f.key}
+                  label={f.label}
+                  tone={f.key}
+                  active={filter === f.key}
+                  onClick={() => setFilter((current) => (current === f.key ? null : f.key))}
+                />
+              ))}
+            </div>
+          )}
         </div>
 
         {runs === null && <p className="mt-6 text-sm text-muted">Loading runs…</p>}
@@ -220,9 +285,13 @@ export default function Home() {
           <p className="mt-6 text-sm text-muted">No runs yet. Start one above to see it here.</p>
         )}
 
-        {runs && runs.length > 0 && (
+        {runs && runs.length > 0 && visibleRuns.length === 0 && (
+          <p className="mt-6 text-sm text-muted">No runs match this filter.</p>
+        )}
+
+        {runs && visibleRuns.length > 0 && (
           <ul className="mt-6 divide-y divide-line overflow-hidden rounded-xl border border-line bg-surface">
-            {runs.map((run) => (
+            {visibleRuns.map((run) => (
               <li key={run.id}>
                 <button
                   onClick={() => router.push(`/runs/${run.id}`)}
@@ -232,7 +301,15 @@ export default function Home() {
                     <p className="truncate text-sm font-medium text-ink group-hover:text-rose-deep">{run.objective}</p>
                     <p className="mt-1 text-xs text-muted">{formatDate(run.created_at)}</p>
                   </div>
-                  <Badge status={run.status} />
+                  <div className="flex shrink-0 flex-col items-end gap-1.5">
+                    <Badge status={run.status} />
+                    {needsReview(run) && (
+                      <span className="inline-flex items-center gap-1 text-[11px] font-medium whitespace-nowrap text-warning">
+                        <span className="h-1.5 w-1.5 rounded-full bg-warning" aria-hidden="true" />
+                        needs review
+                      </span>
+                    )}
+                  </div>
                 </button>
               </li>
             ))}
