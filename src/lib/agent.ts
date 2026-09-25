@@ -1239,19 +1239,19 @@ export function createRunTools(ctx: RunContext) {
           );
         }
 
-        // Provenance: a qualified lead must be a company discovered in this run, and each source it
-        // cites must be a page this run retrieved for that company. needs_review leads store no
-        // sources, so they skip this check.
-        if (isQualified) {
+        // Provenance: every saved lead (qualified or needs_review) must be a company discovered in
+        // this run. A qualified lead's cited sources must also be pages this run retrieved for that
+        // company; needs_review leads store no sources, so they skip that part.
+        {
           const citedUrls = [...(args.sources ?? []).map((s) => s.url), ...args.source_urls].filter((u) => u?.trim());
           const candidate = discoveredCandidate(ctx, domain, citedUrls);
           if (!candidate) {
             return reject(
-              `${args.company_name} (${domain ?? "no domain"}) was not returned by discover_companies in this run. Only discovered companies can be saved as qualified; use the domain exactly as discovery returned it. Nothing was saved.`,
+              `${args.company_name} (${domain ?? "no domain"}) was not returned by discover_companies in this run. Only discovered companies can be saved, as qualified or needs_review; use the domain exactly as discovery returned it. Nothing was saved.`,
               "provenance"
             );
           }
-          const unretrieved = [...new Set(unretrievedSources(ctx, candidate, citedUrls))];
+          const unretrieved = isQualified ? [...new Set(unretrievedSources(ctx, candidate, citedUrls))] : [];
           if (unretrieved.length) {
             return reject(
               `${args.company_name} cites sources this run did not retrieve for it: ${unretrieved.map((u) => safeUrl(u)).join(", ")}. Cite only pages of this company you scraped successfully with scrape_company, or its LinkedIn page from discovery. Nothing was saved.`,
@@ -1300,7 +1300,8 @@ export function createRunTools(ctx: RunContext) {
             }
             if (isQualified) ctx.usage.qualified++;
 
-            // Insert lead — needs_review leads get basic info only until a human promotes them
+            // Insert lead — needs_review leads keep their fit reasons, concerns and summary (so a
+            // reviewer sees why the agent thought they might fit) but no sources or outreach
             try {
               leadId = await ctx.store.insertLead({
                 run_id: ctx.runId,
@@ -1308,10 +1309,10 @@ export function createRunTools(ctx: RunContext) {
                 company_domain: domain ?? args.company_domain ?? null,
                 qualification_status: status,
                 confidence: args.confidence,
-                fit_reasons: isNeedsReview ? [] : args.fit_reasons,
+                fit_reasons: args.fit_reasons,
                 concerns,
                 source_urls: args.source_urls,
-                source_summary: isNeedsReview ? null : args.source_summary,
+                source_summary: args.source_summary,
               });
             } catch (err) {
               // Release the reservation so a retry is possible
@@ -1571,7 +1572,7 @@ ${OUTREACH_DRAFT_RULES}
 
    Stop searching and qualifying once the required number of qualified leads has been reached.
 
-   If the target cannot be reached because suitable candidates are unavailable or evidence is insufficient, preserve the qualified leads obtained and save appropriate needs_review records to explain the gap.
+   If the target cannot be reached, preserve the qualified leads obtained and explain the shortfall in the run completion message. Save a lead as needs_review only when it meets every hard filter that can be checked (geography, industry, size band) but a specific criterion is unverifiable. Do not save off-topic or unknown companies as needs_review to fill the gap.
 
    Never create extra qualified leads merely to fill the number.
 

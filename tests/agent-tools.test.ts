@@ -463,7 +463,7 @@ test("a failed scrape may be retried once, and every attempt counts", async () =
 test("qualified lead limit holds under parallel saves", async () => {
   store.addRun("A", { lead_limit: 2 });
   const { ctx, call } = await setup(store, "A", makeFetch().impl);
-  research(ctx, "a.com", "b.com", "c.com", "d.com");
+  research(ctx, "a.com", "b.com", "c.com", "d.com", "e.com");
   const results = await Promise.all(
     ["a", "b", "c", "d"].map((d) => call("save_lead", lead(d.toUpperCase(), `${d}.com`)))
   );
@@ -895,8 +895,10 @@ test("a qualified lead whose size band extends beyond the employee range is save
 
 test("the size band is also found through the lead's LinkedIn URL", async () => {
   const { call } = await setupWithBands();
+  // No domain given: the company is identified (and its band found) by its LinkedIn page
   const res = await call("save_lead", {
-    ...lead("Straddle Co", "straddle-other-domain.io"),
+    ...lead("Straddle Co", "unused"),
+    company_domain: undefined,
     source_urls: ["https://www.linkedin.com/company/straddle"],
   });
   assert.match(res.text, /51-200 extends beyond/);
@@ -936,7 +938,8 @@ test("a qualified lead without a LinkedIn message is rejected; the corrected ret
 
 test("needs_review leads do not need outreach", async () => {
   store.addRun("A");
-  const { call } = await setup(store, "A", makeFetch().impl);
+  const { ctx, call } = await setup(store, "A", makeFetch().impl);
+  research(ctx, "maybe.io");
   const res = await call("save_lead", { ...lead("Maybe Co", "maybe.io", "needs_review"), outreach: undefined });
   assert.equal(res.isError, false, res.text);
 });
@@ -1010,7 +1013,8 @@ test("a qualified lead with no source records is rejected; the corrected retry s
 
 test("needs_review leads (including size-band downgrades) do not need source records", async () => {
   store.addRun("A");
-  const { call } = await setup(store, "A", makeFetch().impl);
+  const { ctx, call } = await setup(store, "A", makeFetch().impl);
+  research(ctx, "maybe.io");
   const res = await call("save_lead", { ...lead("Maybe Co", "maybe.io", "needs_review"), sources: undefined, outreach: undefined });
   assert.equal(res.isError, false, res.text);
 
@@ -1196,7 +1200,7 @@ test("a qualified lead for a company not discovered in this run is rejected befo
   const { ctx, call } = await setupProvenance();
   const res = await call("save_lead", cited("Invented Co", "invented.io", ["https://invented.io"]));
   assert.equal(res.isError, true);
-  assert.match(res.text, /was not returned by discover_companies in this run\. Only discovered companies can be saved as qualified.*Nothing was saved/);
+  assert.match(res.text, /was not returned by discover_companies in this run\. Only discovered companies can be saved, as qualified or needs_review.*Nothing was saved/);
   assert.match(store.toolCalls.at(-1)?.error_message ?? "", /^provenance:/);
   assert.equal(store.leads.length, 0);
   assert.equal(ctx.usage.qualified, 0, "no qualified slot reserved");
@@ -1257,11 +1261,64 @@ test("a company discovered without a website is identified by its LinkedIn page;
   assert.equal(ok.isError, false, ok.text);
 });
 
-test("needs_review leads skip the provenance checks (they store no sources)", async () => {
-  const { call } = await setupProvenance();
-  const res = await call("save_lead", { ...cited("Unclear Co", "unclear.io", ["https://unclear.io/never-scraped"]), qualification_status: "needs_review", outreach: undefined });
-  assert.equal(res.isError, false, res.text);
+test("needs_review leads must be discovered in this run, but skip the source check (they store no sources)", async () => {
+  const { ctx, call } = await setupProvenance();
+  const undiscovered = await call("save_lead", {
+    ...cited("Unclear Co", "unclear.io", ["https://unclear.io/never-scraped"]),
+    qualification_status: "needs_review",
+    outreach: undefined,
+  });
+  assert.equal(undiscovered.isError, true);
+  assert.match(undiscovered.text, /was not returned by discover_companies in this run\. Only discovered companies can be saved, as qualified or needs_review/);
+  assert.match(store.toolCalls.at(-1)?.error_message ?? "", /^provenance:/);
+  assert.equal(store.leads.length, 0);
+
+  // A discovered company is saved even though its cited page was never scraped
+  const discovered = await call("save_lead", {
+    ...cited("Company 1", "company1.com", ["https://company1.com/never-scraped"]),
+    qualification_status: "needs_review",
+    outreach: undefined,
+  });
+  assert.equal(discovered.isError, false, discovered.text);
   assert.equal(store.sources.length, 0);
+  assert.equal(ctx.usage.qualified, 0);
+
+  // A company discovered without a website is identified by its LinkedIn page
+  const noSite = await call("save_lead", {
+    ...cited("No Site Co", undefined, ["https://www.linkedin.com/company/nosite"]),
+    qualification_status: "needs_review",
+    outreach: undefined,
+  });
+  assert.equal(noSite.isError, false, noSite.text);
+});
+
+test("needs_review leads keep their fit reasons and source summary (sources and outreach are still not stored)", async () => {
+  const { call } = await setupProvenance();
+  const res = await call("save_lead", {
+    ...cited("Company 2", "company2.com", ["https://www.linkedin.com/company/company2"]),
+    qualification_status: "needs_review",
+    fit_reasons: ["Nigerian fintech in the 11-50 band"],
+    concerns: ["Website returned no content"],
+    source_summary: "LinkedIn profile only: digital lending for SMEs.",
+  });
+  assert.equal(res.isError, false, res.text);
+  const saved = store.leads.find((l) => l.company_domain === "company2.com")!;
+  assert.equal(saved.qualification_status, "needs_review");
+  assert.deepEqual(saved.fit_reasons, ["Nigerian fintech in the 11-50 band"]);
+  assert.equal(saved.source_summary, "LinkedIn profile only: digital lending for SMEs.");
+  assert.deepEqual(saved.concerns, ["Website returned no content"]);
+  assert.equal(store.sources.length, 0);
+  assert.equal(store.outreach.length, 0);
+});
+
+test("the system prompt limits needs_review to leads that pass the checkable hard filters", async () => {
+  store.addRun("A");
+  const { ctx } = await setup(store, "A", makeFetch().impl);
+  const prompt = String(buildQueryOptions(ctx, createSdkMcpServer({ name: "t", version: "1", tools: [] })).systemPrompt);
+  assert.match(prompt, /If the target cannot be reached, preserve the qualified leads obtained and explain the shortfall in the run completion message\./);
+  assert.match(prompt, /Save a lead as needs_review only when it meets every hard filter that can be checked \(geography, industry, size band\) but a specific criterion is unverifiable\./);
+  assert.match(prompt, /Do not save off-topic or unknown companies as needs_review to fill the gap\./);
+  assert.doesNotMatch(prompt, /save appropriate needs_review records to explain the gap/);
 });
 
 test("a duplicate caught by the database's unique index is reported as a duplicate and frees the slot", async () => {
