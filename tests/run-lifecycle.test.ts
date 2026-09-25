@@ -182,6 +182,38 @@ test("the migration allows all four statuses, including cancelled, and changes n
   assert.doesNotMatch(active, /\bbegin\b|\bcommit\b/, "no explicit transaction (supabase db push adds its own)");
 });
 
+function activeSql(path: string): string {
+  return readFileSync(path, "utf8")
+    .split(/\r?\n/)
+    .filter((l) => !l.trim().startsWith("--"))
+    .join("\n")
+    .toLowerCase();
+}
+
+test("the leads migration adds a per-run unique domain index that allows null and empty domains", () => {
+  const sql = activeSql("supabase/migrations/20260925120000_leads_unique_run_domain.sql");
+  assert.match(sql, /create unique index if not exists leads_run_domain_unique/);
+  assert.match(sql, /on public\.leads \(run_id, lower\(company_domain\)\)/);
+  assert.match(sql, /where company_domain is not null and company_domain <> ''/);
+  assert.doesNotMatch(sql, /\b(update|delete|truncate|drop|insert|alter)\b/, "adds an index only; changes no data");
+  assert.doesNotMatch(sql, /\bbegin\b|\bcommit\b/);
+});
+
+test("the run migration allows one running run per user", () => {
+  const sql = activeSql("supabase/migrations/20260925120100_one_running_run_per_user.sql");
+  assert.match(sql, /create unique index if not exists lead_runs_one_running_per_user/);
+  assert.match(sql, /on public\.lead_runs \(user_id\)\s+where status = 'running' and user_id is not null/);
+  assert.doesNotMatch(sql, /\b(update|delete|truncate|drop|insert|alter)\b/);
+});
+
+test("the schema export covers every table the app uses", () => {
+  const sql = readFileSync("supabase/schema.sql", "utf8");
+  for (const table of ["users", "lead_runs", "leads", "lead_sources", "outreach_drafts", "agent_tool_calls"]) {
+    assert.match(sql, new RegExp(`create table public\\.${table} \\(`), table);
+  }
+  assert.match(sql, /lead_runs_status_check check \(status in \('running', 'completed', 'failed', 'cancelled'\)\)/);
+});
+
 // --- Node / deployment configuration ---
 
 test("package.json pins a Node range that satisfies Next.js and Supabase minimums", () => {

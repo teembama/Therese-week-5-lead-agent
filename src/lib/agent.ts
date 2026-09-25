@@ -94,6 +94,9 @@ export interface RunStore {
   insertToolCall(row: ToolCallRow): Promise<void>;
 }
 
+// Thrown by RunStore.insertLead when the database already holds a lead for the run's domain
+export class DuplicateLeadError extends Error {}
+
 function check(error: { message: string } | null) {
   if (error) throw new Error(error.message);
 }
@@ -159,6 +162,8 @@ export const supabaseRunStore: RunStore = {
   },
   async insertLead(row) {
     const { data, error } = await supabase.from("leads").insert(row).select("id").single();
+    // unique_violation: the run already has a lead for this domain (leads_run_domain_unique)
+    if (error?.code === "23505") throw new DuplicateLeadError(error.message);
     check(error);
     return (data as { id: string }).id;
   },
@@ -206,6 +211,8 @@ export interface RunContext {
   searchedTerms: Set<string>;
   // LinkedIn size band of each discovered company, keyed like seenCandidateDomains
   candidateBands: Map<string, string>;
+  // LinkedIn page path of each discovered company with a website, keyed by its domain
+  candidateLinkedin: Map<string, string>;
   store: RunStore;
   fetch: typeof fetch;
 }
@@ -242,6 +249,7 @@ export async function createRunContext(
     searchPlan: null,
     searchedTerms: new Set(),
     candidateBands: new Map(),
+    candidateLinkedin: new Map(),
     store,
     fetch: fetchImpl,
   };
@@ -638,6 +646,47 @@ function scrapeAllowed(ctx: RunContext, url: string): boolean {
   return [...ctx.allowedScrapeHosts].some((d) => host === d || host.endsWith(`.${d}`));
 }
 
+// --- Evidence provenance (save_lead) ---
+// A qualified lead must be a company discovered in this run, and every source it cites must be
+// a page this run actually retrieved: a successful scrape of that company's website or LinkedIn
+// page, or the company's LinkedIn page from discovery.
+
+interface Candidate {
+  domain: string | null;
+  linkedinPath: string | null;
+}
+
+// The discovered company a lead refers to: by its domain, or (for a company discovered without
+// a website) by its LinkedIn page among the cited URLs. null if it was not discovered.
+function discoveredCandidate(ctx: RunContext, domain: string | null, urls: string[]): Candidate | null {
+  if (domain) {
+    return ctx.seenCandidateDomains.has(domain) ? { domain, linkedinPath: ctx.candidateLinkedin.get(domain) ?? null } : null;
+  }
+  for (const url of urls) {
+    const path = linkedinPath(url);
+    if (path && ctx.allowedLinkedinPaths.has(path)) return { domain: null, linkedinPath: path };
+  }
+  return null;
+}
+
+function belongsTo(candidate: Candidate, url: string): boolean {
+  const path = linkedinPath(url);
+  if (path !== null) return !!candidate.linkedinPath && (path === candidate.linkedinPath || path.startsWith(`${candidate.linkedinPath}/`));
+  const host = normalizeDomain(url);
+  return !!host && !!candidate.domain && (host === candidate.domain || host.endsWith(`.${candidate.domain}`));
+}
+
+// Cited URLs that this run did not retrieve for this company
+function unretrievedSources(ctx: RunContext, candidate: Candidate, urls: string[]): string[] {
+  return urls.filter((url) => {
+    if (!belongsTo(candidate, url)) return true;
+    // The company's own LinkedIn page: its profile data came from discovery
+    if (candidate.linkedinPath && linkedinPath(url) === candidate.linkedinPath) return false;
+    const key = scrapeKey(url);
+    return !(key && ctx.scrapeAttempts.get(key)?.succeeded);
+  });
+}
+
 function linkedinKey(url: string): string {
   return `linkedin:${url.toLowerCase().replace(/\/+$/, "")}`;
 }
@@ -968,6 +1017,7 @@ export function createRunTools(ctx: RunContext) {
           if (c.domain) ctx.allowedScrapeHosts.add(c.domain);
           const liPath = c.linkedinUrl ? linkedinPath(c.linkedinUrl) : null;
           if (liPath) ctx.allowedLinkedinPaths.add(liPath);
+          if (c.domain && liPath) ctx.candidateLinkedin.set(c.domain, liPath);
           // Remember the size band for save_lead's size check
           if (c.employeeCountRange) {
             ctx.candidateBands.set(key, c.employeeCountRange);
@@ -1086,7 +1136,7 @@ export function createRunTools(ctx: RunContext) {
 
   const saveLead = tool(
     "save_lead",
-    "Save a qualified or needs_review lead (not_qualified companies are not saved) with qualification data, source evidence, and outreach drafts (outreach for qualified leads only). A qualified lead requires at least one source record and the full outreach including linkedin_message. The tool enforces the run's qualified-lead limit and rejects duplicate companies (same domain, or same name when no domain is given).",
+    "Save a qualified or needs_review lead (not_qualified companies are not saved) with qualification data, source evidence, and outreach drafts (outreach for qualified leads only). A qualified lead requires at least one source record and the full outreach including linkedin_message. A qualified lead must be a company returned by discover_companies in this run (use its domain exactly as returned; omit the domain for a company discovered without a website), and every URL in sources and source_urls must be a page of that company you scraped successfully, or its LinkedIn page from discovery. The tool enforces the run's qualified-lead limit and rejects duplicate companies (same domain, or same name when no domain is given).",
     {
       company_name: z.string(),
       company_domain: z.string().optional(),
@@ -1186,6 +1236,27 @@ export function createRunTools(ctx: RunContext) {
           );
         }
 
+        // Provenance: a qualified lead must be a company discovered in this run, and each source it
+        // cites must be a page this run retrieved for that company. needs_review leads store no
+        // sources, so they skip this check.
+        if (isQualified) {
+          const citedUrls = [...(args.sources ?? []).map((s) => s.url), ...args.source_urls].filter((u) => u?.trim());
+          const candidate = discoveredCandidate(ctx, domain, citedUrls);
+          if (!candidate) {
+            return reject(
+              `${args.company_name} (${domain ?? "no domain"}) was not returned by discover_companies in this run. Only discovered companies can be saved as qualified; use the domain exactly as discovery returned it. Nothing was saved.`,
+              "provenance"
+            );
+          }
+          const unretrieved = [...new Set(unretrievedSources(ctx, candidate, citedUrls))];
+          if (unretrieved.length) {
+            return reject(
+              `${args.company_name} cites sources this run did not retrieve for it: ${unretrieved.map((u) => safeUrl(u)).join(", ")}. Cite only pages of this company you scraped successfully with scrape_company, or its LinkedIn page from discovery. Nothing was saved.`,
+              "provenance"
+            );
+          }
+        }
+
         // Parallel saves of the same company: only one may proceed (checked and marked
         // synchronously, before any await)
         const key = leadKey(args.company_domain, args.company_name);
@@ -1242,6 +1313,10 @@ export function createRunTools(ctx: RunContext) {
             } catch (err) {
               // Release the reservation so a retry is possible
               if (isQualified) ctx.usage.qualified--;
+              if (err instanceof DuplicateLeadError) {
+                // The database's unique index caught a duplicate the lookup above missed (a race)
+                return reject(`${args.company_name} is already saved in this run. Do not save it again.`, "duplicate");
+              }
               console.error(`LEAD INSERT FAILED (run ${ctx.runId}):`, err);
               return reject("Failed to save lead (database error). You may retry once.", "database");
             }
@@ -1449,7 +1524,7 @@ const SYSTEM_PROMPT = `You are Koya Lead Studio — an AI lead research and outr
 
    Never save more qualified leads than the lead target. save_lead rejects qualified leads past the target and rejects companies already saved in this run.
 
-   A qualified lead must include at least one source record (sources) and the full outreach (3 emails and outreach.linkedin_message); save_lead rejects it otherwise and saves nothing, so correct it and save again. save_lead saves a qualified lead as needs_review when its LinkedIn size band extends beyond the objective's employee range, and says so in its response.
+   A qualified lead must include at least one source record (sources) and the full outreach (3 emails and outreach.linkedin_message); save_lead rejects it otherwise and saves nothing, so correct it and save again. It must also be a company discovered in this run, and every source URL must be a page of that company you scraped successfully or its LinkedIn page from discovery; cite only pages you actually retrieved. save_lead saves a qualified lead as needs_review when its LinkedIn size band extends beyond the objective's employee range, and says so in its response.
 
    Stop searching and qualifying once the required number of qualified leads has been reached.
 

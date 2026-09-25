@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { getSession, requireRole } from "@/lib/auth";
-import { DEFAULT_AGENT_TURN_LIMIT, parseRunRequest, candidateLimitFor } from "@/lib/limits";
+import { createRun } from "@/lib/create-run";
 import { recoverStaleRuns } from "@/lib/stale-runs";
 
-// POST /api/runs — create run and start agent (validation already done by /api/validate)
+// POST /api/runs — create a run and start its agent. The Haiku check is done by /api/validate;
+// structural checks and the one-running-run-per-user cap are enforced here.
 export async function POST(req: NextRequest) {
   const user = await getSession();
   if (!user) {
@@ -21,45 +22,62 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
   }
 
-  // Structural checks, enforced even when /api/validate was skipped. The candidate and
-  // scrape budgets derive from the lead target, so it must be bounded here.
-  const parsed = parseRunRequest(body);
-  if (!parsed.ok) {
-    return NextResponse.json({ error: parsed.error }, { status: 400 });
-  }
-  const { objective, leadTarget } = parsed;
-
-  const candidateLimit = candidateLimitFor(leadTarget);
-
-  // Idempotency: return an identical run started in the last 30s instead of duplicating it
-  const { data: recent } = await supabase
-    .from("lead_runs")
-    .select("id")
-    .eq("objective", objective.trim())
-    .eq("status", "running")
-    .gte("created_at", new Date(Date.now() - 30000).toISOString())
-    .limit(1);
-
-  if (recent && recent.length > 0) {
-    return NextResponse.json({ run_id: recent[0].id, status: "running" });
+  // Resolve this server's orphaned runs first, so a run whose process died does not count as
+  // "in progress" and block the user
+  try {
+    await recoverStaleRuns(supabase);
+  } catch (err) {
+    console.error("Stale-run recovery failed:", err);
   }
 
-  const { data: run, error: insertError } = await supabase
-    .from("lead_runs")
-    .insert({
-      user_id: user.id,
-      objective: objective.trim(),
-      lead_limit: leadTarget,
-      candidate_limit: candidateLimit,
-      scrape_limit: candidateLimit,
-      agent_turn_limit: DEFAULT_AGENT_TURN_LIMIT,
-    })
-    .select("id")
-    .single();
-
-  if (insertError || !run) {
+  // Structural checks (enforced even when /api/validate was skipped), duplicate clicks, and one
+  // running run per user: see src/lib/create-run.ts
+  let result;
+  try {
+    result = await createRun(
+      {
+        async findRecentRun(userId, objective, since) {
+          const { data, error } = await supabase
+            .from("lead_runs")
+            .select("id")
+            .eq("user_id", userId)
+            .eq("objective", objective)
+            .eq("status", "running")
+            .gte("created_at", since)
+            .limit(1);
+          if (error) throw new Error(error.message);
+          return data?.[0]?.id ?? null;
+        },
+        async findRunningRun(userId) {
+          const { data, error } = await supabase
+            .from("lead_runs")
+            .select("id")
+            .eq("user_id", userId)
+            .eq("status", "running")
+            .limit(1);
+          if (error) throw new Error(error.message);
+          return data?.[0]?.id ?? null;
+        },
+        async insertRun(row) {
+          const { data, error } = await supabase.from("lead_runs").insert(row).select("id").single();
+          // unique_violation on lead_runs_one_running_per_user: a concurrent request won the race
+          if (error?.code === "23505") return "running_exists";
+          if (error || !data) throw new Error(error?.message ?? "no row returned");
+          return { id: data.id as string };
+        },
+      },
+      user,
+      body
+    );
+  } catch (err) {
+    console.error("Run creation failed:", err);
     return NextResponse.json({ error: "Failed to create run. Please try again." }, { status: 500 });
   }
+
+  if (!result.startRunId) {
+    return NextResponse.json(result.body, { status: result.httpStatus });
+  }
+  const run = { id: result.startRunId };
 
   // Start agent in-process in the background. It loads its objective and limits from the
   // run record and records its own failures, so only the run id is passed.

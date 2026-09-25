@@ -110,7 +110,9 @@ test("requested counts are read from the text, but numbers describing the compan
     [OBJ, 5],
     ["Find 50 US SaaS companies", 50],
     ["give me the top 20 fintech startups in Lagos", 20],
-    ["I need 25 leads in logistics software", 25],
+    ["I need 25 leads in logistics software", null], // no request verb: the model's count decides
+    ["get me 5 logistics SaaS companies", 5],
+    ["Identify 8 HR tech firms", 8],
     ["list 12 HR software companies that struggle with onboarding", 12],
     ["Find US SaaS companies with 50 employees that need automation", null],
     ["SaaS companies that need 50 seats of support tooling", null],
@@ -119,6 +121,31 @@ test("requested counts are read from the text, but numbers describing the compan
     ["Find 3 companies similar to the 500 largest firms", 3],
   ];
   for (const [text, expected] of cases) assert.equal(requestedLeadCountInText(text), expected, text);
+});
+
+test("employee, client and revenue numbers are never read as a lead request", () => {
+  for (const text of [
+    "Logistics firms with 50-200 employees that work with enterprise clients and need automation",
+    "US B2B SaaS companies with 10 to 100 employees that serve 50 clients",
+    "Agencies with 200 brands under management that need automation",
+    "SaaS vendors used by 40 agencies that need help",
+    "Find US SaaS companies with 50-200 employees that need AI automation",
+    "Find SaaS companies with $20M revenue and 150 customers that need automation",
+    "Find companies that grew 40% last year",
+  ]) {
+    assert.equal(requestedLeadCountInText(text), null, text);
+  }
+});
+
+test("a large employee range no longer blocks a valid objective; the model's count is used", async () => {
+  const text = "Find US logistics software firms with 50-200 employees that work with 500 enterprise clients and need automation";
+  const result = await validateObjective(text, async () => '{"valid": true, "lead_count": null}');
+  assert.equal(result.httpStatus, 200, JSON.stringify(result.body));
+  assert.equal(result.body.leadTarget, 10);
+  const failing = await validateObjective(text, async () => {
+    throw new Error("down");
+  });
+  assert.equal(failing.httpStatus, 503, "without the model, the unrelated numbers are not mistaken for a request");
 });
 
 test("the /api/validate route delegates to validateObjective", () => {

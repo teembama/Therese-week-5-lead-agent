@@ -20,7 +20,7 @@ Koya Lead Studio is an AI lead-research and outreach-drafting agent for Koya Tal
 ```
 Browser (Next.js pages)
   ├─ POST /api/validate      Claude Haiku + structural checks → leadTarget, or a 400 with the reason
-  ├─ POST /api/runs          structural checks again → lead_runs row → runAgent(runId) in-process
+  ├─ POST /api/runs          structural checks again, one running run per user (409) → lead_runs row → runAgent(runId) in-process
   ├─ GET  /api/runs          run list (runs stale-run recovery first)
   ├─ GET  /api/runs/[id]     run + leads + sources + outreach + tool calls; UI polls every 3 s
   └─ PATCH /api/leads/[id]   promote a needs_review lead; the reason is checked by Claude Haiku first
@@ -94,10 +94,11 @@ No tool accepts a `run_id`: tools are created per run and write only to that run
 ### `save_lead` rules
 
 - `not_qualified` leads are rejected (skipped, not stored).
+- **Provenance** (qualified leads, checked before anything is written): the company must have been returned by `discover_companies` in this run (matched by domain, or by its LinkedIn page for a company without a website), and every URL in `sources` and `source_urls` must be a page of **that** company that this run scraped successfully, or the company's LinkedIn page from discovery. Failed scrapes, other companies' pages and URLs never retrieved are rejected. needs_review leads skip this check (they store no sources).
 - A **qualified** lead needs at least one source record and the full outreach (3 emails **and** a LinkedIn message); otherwise nothing is saved.
 - A qualified lead whose LinkedIn size band extends beyond the objective's employee range (e.g. 51–200 vs 10–100) is saved as **needs_review** with a concern explaining why.
 - needs_review leads store basic information only (no sources or outreach) until a reviewer promotes them.
-- **Retry-safe**: before inserting, it looks up the run's existing lead for the same domain (or name). A save that stopped part-way is completed by adding only the missing sources/outreach; a complete lead is rejected as a duplicate.
+- **Retry-safe**: before inserting, it looks up the run's existing lead for the same domain (or name). A save that stopped part-way is completed by adding only the missing sources/outreach; a complete lead is rejected as a duplicate. Once `20260925120000_leads_unique_run_domain.sql` is applied, the database also rejects a second lead with the same domain in a run (a concurrent save), and the tool reports it as a duplicate. The lead, its sources and its outreach are still separate inserts (not one transaction).
 
 ### Agent runtime configuration
 
@@ -146,6 +147,10 @@ No tool accepts a `run_id`: tools are created per run and write only to that run
 
 - `lead_runs.status` has a check constraint. **Apply `supabase/migrations/20260924230000_add_cancelled_run_status.sql`** so it accepts `cancelled`; until then, cancelled runs are stored as `failed` with the cancellation message.
 - All server access uses the service-role key, which bypasses Row Level Security; access control is enforced in the API routes, not by RLS. (Whether RLS policies exist on the tables is not verified from this repository.)
+- **Schema**: `supabase/schema.sql` is reconstructed from the live database's REST metadata (columns, types, nullability, defaults, primary and foreign keys verified; RLS, other constraints and indexes not exposed). It says how to replace it with a `pg_dump`. `lead_runs.user_id` has no foreign key to `users`.
+- **Pending migrations** (apply manually, after the duplicate checks in each file's header):
+  - `20260925120000_leads_unique_run_domain.sql`: unique `(run_id, lower(company_domain))` for non-null, non-empty domains.
+  - `20260925120100_one_running_run_per_user.sql`: at most one `running` run per user (closes the race in the 409 check).
 
 ---
 
@@ -204,17 +209,17 @@ All signed-in users see all runs (a shared team workspace).
 
 ## Tests
 
-`npm test` runs the `node:test` suites with `tsx`: agent tools against an in-memory store and fake Apify/Firecrawl (limits, run binding, logging, search plan, scrape scope, save rules), cancellation rules, stale-run recovery and run-request checks, and objective validation.
+`npm test` runs the `node:test` suites with `tsx`: agent tools against an in-memory store and fake Apify/Firecrawl (limits, run binding, logging, search plan, scrape scope, save rules and evidence provenance), cancellation rules, run creation (structural checks, one running run per user), stale-run recovery, migrations and schema file, objective and promotion-reason validation, Discord notices and the sample pack. All use fakes; none touch a real database or API. The two pending migrations were also checked on a local Postgres 17 (PGlite) before being committed.
 
 ---
 
 ## Known limitations
 
 1. **Shared visibility**: every signed-in user can read every run; there is no per-user data isolation for reads.
-2. **No concurrency or rate limits**: a user can start several runs at once, and sign-in is not rate-limited.
-3. **Duplicate-run protection is light**: an identical objective started within 30 seconds returns the running run; there is no idempotency key.
-4. **Limits are enforced in the server process**, not by database constraints (no unique index on a run's lead domains).
-5. **Evidence is not verified claim by claim**: outreach grounding is a prompt rule, and saved source URLs are not checked against the pages actually retrieved.
+2. **One running run per user, but no rate limits**: POST /api/runs returns 409 while the user has a run in progress (a double click with the same objective returns that run); sign-in and validation are not rate-limited.
+3. **Semantic validation is not repeated on run creation**: POST /api/runs re-runs the structural checks only; the Haiku check happens in /api/validate.
+4. **Most limits are enforced in the server process**; the database adds a unique lead domain per run and one running run per user once the two pending migrations are applied.
+5. **Evidence is verified per page, not per claim**: every cited source must be a page this run retrieved for that company, but whether each outreach claim appears on those pages is a prompt rule.
 6. **Promotion by a reviewer** creates a qualified lead without sources or outreach ("outreach pending").
 7. **Cancellation is cooperative**: the model step in progress when a user cancels completes (and is billed) before the next tool call stops it.
 8. **Interrupted runs are not resumed**; they are marked failed after 35 minutes without a heartbeat.

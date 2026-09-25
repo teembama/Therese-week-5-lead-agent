@@ -34,20 +34,36 @@ or
 {"valid": false, "suggestion": "<one sentence telling them what to fix>"}`;
 }
 
-const COMPANY_NOUNS =
-  "companies|company|leads|businesses|firms|startups|organi[sz]ations|prospects|agencies|brands|vendors|providers|clients|accounts";
-
-// The number of leads the text explicitly asks for, e.g. "Find 50 US SaaS companies" → 50.
-// Looks for a request verb followed by a number first ("find 50", "give me 12"), then for a number
-// directly describing companies ("50 SaaS companies", "I need 25 leads"). Returns null when no
-// count is requested. Numbers describing the companies themselves ("with 10 to 100 employees",
-// "that need 50 seats") do not match: only unambiguous request verbs are used.
+// The number of leads the text explicitly asks for: a number directly after a request verb, e.g.
+// "Find 50 US SaaS companies" or "get me 5" → 50 / 5. Returns null otherwise. Numbers in any other
+// position ("50-200 employees", "serve 50 clients", "$5M revenue", "I need 25 leads") are not
+// read as a request; when in doubt, the model's extracted count decides.
 export function requestedLeadCountInText(objective: string): number | null {
-  const verbFirst =
-    /\b(?:find|list|identify|research|source|compile|give\s+me)\s+(?:me\s+|us\s+)?(?:about\s+|around\s+|at\s+least\s+|up\s+to\s+|the\s+top\s+|top\s+)?(\d{1,6})\b/i.exec(objective);
-  if (verbFirst) return Number(verbFirst[1]);
-  const numberFirst = new RegExp(`\\b(\\d{1,6})\\s+(?:[\\w&/-]+\\s+){0,5}?(?:${COMPANY_NOUNS})\\b`, "i").exec(objective);
-  return numberFirst ? Number(numberFirst[1]) : null;
+  const match =
+    /\b(?:find|get|list|identify|research|source|compile|give|show)\s+(?:me\s+|us\s+)?(?:about\s+|around\s+|at\s+least\s+|up\s+to\s+|the\s+top\s+|top\s+)?(\d{1,6})\b(?!\s*(?:[-–]|to\s)\s*\d|\s*%)/i.exec(objective);
+  return match ? Number(match[1]) : null;
+}
+
+// Structural checks only (no model call): shared by /api/validate and POST /api/runs, so a
+// direct API call cannot skip them
+export function checkObjectiveStructure(raw: unknown): { ok: true; objective: string } | { ok: false; error: string } {
+  if (!raw || typeof raw !== "string" || raw.trim().length === 0) {
+    return { ok: false, error: "Please enter a qualification objective." };
+  }
+  const objective = raw.trim();
+  if (objective.length > MAX_OBJECTIVE_LENGTH) {
+    return { ok: false, error: `Your objective is too long. Keep it under ${MAX_OBJECTIVE_LENGTH} characters.` };
+  }
+  const words = objective.split(/\s+/).filter((w) => w.length > 1);
+  if (words.length < 3) {
+    return {
+      ok: false,
+      error: "Your objective needs to be a complete description. Include the type of companies, their industry, and what you're looking for.",
+    };
+  }
+  const textCount = requestedLeadCountInText(objective);
+  if (textCount !== null && textCount > MAX_LEADS) return { ok: false, error: MAX_LEADS_MESSAGE };
+  return { ok: true, objective };
 }
 
 function tooMany(): ValidateResult {
@@ -59,25 +75,10 @@ export async function validateObjective(
   raw: unknown,
   callValidator: (prompt: string) => Promise<string>
 ): Promise<ValidateResult> {
-  if (!raw || typeof raw !== "string" || raw.trim().length === 0) {
-    return { httpStatus: 400, body: { error: "Please enter a qualification objective." } };
-  }
-
-  const objective = raw.trim();
-
-  if (objective.length > MAX_OBJECTIVE_LENGTH) {
-    return { httpStatus: 400, body: { error: `Your objective is too long. Keep it under ${MAX_OBJECTIVE_LENGTH} characters.` } };
-  }
-
-  const words = objective.split(/\s+/).filter((w) => w.length > 1);
-  if (words.length < 3) {
-    return {
-      httpStatus: 400,
-      body: { error: "Your objective needs to be a complete description. Include the type of companies, their industry, and what you're looking for." },
-    };
-  }
-
-  const textCount = requestedLeadCountInText(objective);
+  const structure = checkObjectiveStructure(raw);
+  if (!structure.ok) return { httpStatus: 400, body: { error: structure.error } };
+  // An explicit request for more than MAX_LEADS in the text was rejected above, without a model call
+  const objective = structure.objective;
 
   let result: { valid?: unknown; suggestion?: unknown; lead_count?: unknown };
   try {
@@ -89,15 +90,12 @@ export async function validateObjective(
     }
   } catch (err) {
     console.error("VALIDATION ERROR:", err);
-    // Even without the model's answer, a request that clearly asks for too many leads gets
-    // the real reason rather than "temporarily unavailable"
-    if (textCount !== null && textCount > MAX_LEADS) return tooMany();
     return { httpStatus: 503, body: { error: VALIDATOR_UNAVAILABLE } };
   }
 
   // Lead count: checked before anything else in the model's answer
   const modelCount = result.lead_count;
-  if ((typeof modelCount === "number" && modelCount > MAX_LEADS) || (textCount !== null && textCount > MAX_LEADS)) {
+  if (typeof modelCount === "number" && modelCount > MAX_LEADS) {
     return tooMany();
   }
 
