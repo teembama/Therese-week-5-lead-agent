@@ -48,6 +48,7 @@ export default function Home() {
   }, [router]);
 
   const canCreateRuns = user?.role === "researcher" || user?.role === "admin";
+  const isReviewer = user?.role === "reviewer";
 
   useEffect(() => {
     fetch("/api/runs")
@@ -128,13 +129,27 @@ export default function Home() {
     <main className="mx-auto max-w-5xl px-6 py-14 sm:py-20">
       <section className="max-w-2xl">
         <Label>Lead research</Label>
-        <h1 className="mt-3 text-4xl font-semibold leading-tight tracking-tight sm:text-[44px]">
-          Find companies worth talking to.
-        </h1>
-        <p className="mt-4 text-base leading-relaxed text-muted">
-          Describe the companies you are looking for and why. The agent searches LinkedIn, researches each company, keeps
-          only those that fit with cited evidence, and drafts outreach for you to review. Nothing is ever sent.
-        </p>
+        {isReviewer ? (
+          <>
+            <h1 className="mt-3 text-4xl font-semibold leading-tight tracking-tight sm:text-[44px]">
+              Review and approve outreach.
+            </h1>
+            <p className="mt-4 text-base leading-relaxed text-muted">
+              Research runs appear here once complete. Review the qualified leads, check the evidence, and approve outreach
+              drafts before anything goes out.
+            </p>
+          </>
+        ) : (
+          <>
+            <h1 className="mt-3 text-4xl font-semibold leading-tight tracking-tight sm:text-[44px]">
+              Find companies worth talking to.
+            </h1>
+            <p className="mt-4 text-base leading-relaxed text-muted">
+              Describe the companies you are looking for and why. The agent searches LinkedIn, researches each company,
+              keeps only those that fit with cited evidence, and drafts outreach for you to review. Nothing is ever sent.
+            </p>
+          </>
+        )}
       </section>
 
       {canCreateRuns && (
