@@ -5,6 +5,7 @@ import {
   PROMOTION_VALIDATOR_UNAVAILABLE,
   buildPromotionPrompt,
   createValidationToken,
+  fallbackExample,
   validatePromotionReason,
   verifyValidationToken,
   type PromotionContext,
@@ -43,7 +44,30 @@ test("a rejected reason returns Haiku's explanation with 400", async () => {
     { ...ctx, reason: "looks good" },
     reply('{"valid": false, "explanation": "Say what you verified about the company\'s headcount."}')
   );
-  assert.deepEqual(result, { ok: false, httpStatus: 400, error: "Say what you verified about the company's headcount." });
+  assert.deepEqual(result, {
+    ok: false,
+    httpStatus: 400,
+    error: "Say what you verified about the company's headcount.",
+    example: "e.g. 'Their LinkedIn profile shows 23 employees, which is within the objective's size range.'",
+  });
+});
+
+test("the model's example is shown as e.g. '...' and the prompt asks for one tied to the concerns", async () => {
+  const result = await validatePromotionReason(
+    { ...ctx, reason: "has potential" },
+    reply('{"valid": false, "explanation": "Too generic.", "example": "\\"Their LinkedIn profile shows 23 employees, which is within the 10-100 range.\\""}')
+  );
+  assert.ok(!result.ok);
+  assert.equal(!result.ok && result.example, "e.g. 'Their LinkedIn profile shows 23 employees, which is within the 10-100 range.'");
+  assert.match(buildPromotionPrompt(ctx), /"example": "<one sentence showing what a good reason could look like for THIS company's concerns/);
+});
+
+test("without a model example, a template for the first concern is used", () => {
+  assert.equal(fallbackExample(["Headcount not confirmed"]), "Their LinkedIn profile shows 23 employees, which is within the objective's size range.");
+  assert.equal(
+    fallbackExample(["No evidence they sell to businesses."]),
+    "I checked their website and confirmed a specific fact that addresses this concern: No evidence they sell to businesses."
+  );
 });
 
 test("a rejection without an explanation still returns a helpful message", async () => {

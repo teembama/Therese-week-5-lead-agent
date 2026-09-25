@@ -575,6 +575,7 @@ function PromoteLeadModal({ lead, onClose, onPromoted }: { lead: Lead; onClose: 
   const [phase, setPhase] = useState<"edit" | "validating" | "confirm" | "saving">("edit");
   const [token, setToken] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [example, setExample] = useState<string | null>(null);
   const busy = phase === "validating" || phase === "saving";
 
   const send = (extra: Record<string, unknown>) =>
@@ -592,11 +593,13 @@ function PromoteLeadModal({ lead, onClose, onPromoted }: { lead: Lead; onClose: 
     }
     setPhase("validating");
     setError(null);
+    setExample(null);
     try {
       const res = await send({ validate_only: true });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) {
         setError(json.error || "Could not check the reason. Please try again.");
+        setExample(typeof json.example === "string" ? json.example : null);
         setPhase("edit");
         return;
       }
@@ -675,6 +678,7 @@ function PromoteLeadModal({ lead, onClose, onPromoted }: { lead: Lead; onClose: 
           setReason(e.target.value);
           setToken(null);
           if (error) setError(null);
+          if (example) setExample(null);
         }}
         rows={4}
         maxLength={1000}
@@ -686,6 +690,7 @@ function PromoteLeadModal({ lead, onClose, onPromoted }: { lead: Lead; onClose: 
       {error && (
         <Alert tone="danger" className="mt-3">
           {error}
+          {example && <span className="mt-2 block text-ink/90">{example}</span>}
         </Alert>
       )}
 

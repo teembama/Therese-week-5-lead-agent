@@ -134,7 +134,7 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className="w-full max-w-lg rounded-2xl border border-line-strong bg-surface p-6 shadow-[0_24px_70px_-20px_rgb(0_0_0/0.7)]"
+        className="max-h-[calc(100dvh-2rem)] w-full max-w-lg overflow-y-auto overscroll-contain rounded-2xl border border-line-strong bg-surface p-6 shadow-[0_24px_70px_-20px_rgb(0_0_0/0.7)]"
         onClick={(e) => e.stopPropagation()}
       >
         <h2 className="text-lg font-semibold tracking-tight">{title}</h2>

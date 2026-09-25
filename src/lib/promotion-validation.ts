@@ -19,7 +19,7 @@ export interface PromotionContext {
   reason: string;
 }
 
-export type PromotionCheck = { ok: true } | { ok: false; httpStatus: number; error: string };
+export type PromotionCheck = { ok: true } | { ok: false; httpStatus: number; error: string; example?: string };
 
 function list(items: string[]): string {
   return items.length ? items.map((i) => `- ${i}`).join("\n") : "(none recorded)";
@@ -60,7 +60,10 @@ The reason is valid only if ALL of these hold:
 Respond ONLY with JSON:
 {"valid": true}
 or
-{"valid": false, "explanation": "<one or two sentences telling the reviewer what is missing, addressed to them>"}`;
+{"valid": false, "explanation": "<one or two sentences telling the reviewer what is missing, addressed to them>", "example": "<one sentence showing what a good reason could look like for THIS company's concerns, citing the kind of concrete fact that would address them>"}
+
+For example, if a concern is that the employee count may be outside the objective's range, a good example is: "Their LinkedIn profile shows 23 employees, which is within the 10-100 range."
+The example is only an illustration of the expected kind of reason; it does not change the rules above.`;
 }
 
 // callModel sends the prompt to the model and returns its raw text reply
@@ -68,7 +71,7 @@ export async function validatePromotionReason(
   ctx: PromotionContext,
   callModel: (prompt: string) => Promise<string>
 ): Promise<PromotionCheck> {
-  let result: { valid?: unknown; explanation?: unknown };
+  let result: { valid?: unknown; explanation?: unknown; example?: unknown };
   try {
     const text = await callModel(buildPromotionPrompt(ctx));
     const json = text.replace(/```json|```/g, "").match(/\{[\s\S]*\}/)?.[0];
@@ -84,7 +87,29 @@ export async function validatePromotionReason(
 
   if (result.valid) return { ok: true };
   const explanation = typeof result.explanation === "string" ? result.explanation.trim() : "";
-  return { ok: false, httpStatus: 400, error: explanation || DEFAULT_REJECTION };
+  const example = typeof result.example === "string" ? result.example.trim().replace(/^e\.g\.\s*/i, "") : "";
+  return {
+    ok: false,
+    httpStatus: 400,
+    error: explanation || DEFAULT_REJECTION,
+    example: formatExample(example || fallbackExample(ctx.concerns)),
+  };
+}
+
+// Shown as e.g. '...' under the rejection message
+function formatExample(example: string): string {
+  const text = example.replace(/^["'“‘]+|["'”’]+$/g, "").trim();
+  return `e.g. '${text.length > 300 ? `${text.slice(0, 299).trimEnd()}…` : text}'`;
+}
+
+// Used when the model gives no example: a template aimed at the first concern
+export function fallbackExample(concerns: string[]): string {
+  const concern = concerns[0]?.trim();
+  if (!concern) return "I checked their website and confirmed a specific fact that shows they match the objective.";
+  if (/employee|headcount|team size|staff|company size|\bsize\b/i.test(concern)) {
+    return "Their LinkedIn profile shows 23 employees, which is within the objective's size range.";
+  }
+  return `I checked their website and confirmed a specific fact that addresses this concern: ${concern.replace(/[.\s]+$/, "")}.`;
 }
 
 // --- Validation token ---

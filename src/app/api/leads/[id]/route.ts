@@ -96,7 +96,10 @@ export async function PATCH(
       }
     );
     if (!check.ok) {
-      return NextResponse.json({ error: check.error }, { status: check.httpStatus });
+      return NextResponse.json(
+        { error: check.error, ...(check.example ? { example: check.example } : {}) },
+        { status: check.httpStatus }
+      );
     }
   }
 
