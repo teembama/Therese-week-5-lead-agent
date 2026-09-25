@@ -1,6 +1,7 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { getSession, requireRole } from "@/lib/auth";
+import { notifyLeadPromoted } from "@/lib/discord";
 
 // PATCH /api/leads/[id] — human reviewer promotes a needs_review lead to qualified
 export async function PATCH(
@@ -112,6 +113,17 @@ export async function PATCH(
   if (logError) {
     console.error("Failed to log manual review:", logError.message);
   }
+
+  // Optional Discord notice, sent after the response so it never delays the promotion
+  after(() =>
+    notifyLeadPromoted({
+      runId: lead.run_id,
+      companyName: lead.company_name,
+      promotedBy: user.username,
+      reason,
+      requestOrigin: req.nextUrl.origin,
+    })
+  );
 
   return NextResponse.json({ lead: updated });
 }

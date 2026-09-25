@@ -27,6 +27,11 @@ Full architecture, limits, tools and failure handling: **[SYSTEM_DOCS.md](SYSTEM
    APIFY_API_TOKEN=<token>
    FIRECRAWL_API_KEY=<key>
    SESSION_SECRET=<random string, at least 32 characters>
+
+   # Optional: Discord notifications when a run completes or a lead is promoted
+   DISCORD_WEBHOOK_URL=<Discord webhook URL>
+   # Optional: public address used for run links in those notifications
+   APP_URL=https://<your app domain>
    ```
 
    A session secret can be generated with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`.
@@ -56,7 +61,7 @@ Local runs use real Apify, Firecrawl and Claude credits: a 3-lead run typically 
 ## Deploy to Railway
 
 1. Create a Railway service from this repository. Railway detects Next.js and runs `npm run build` and `npm start`; no extra configuration file is needed.
-2. Set the six environment variables above in the service's **Variables** tab. `NEXT_PUBLIC_SUPABASE_URL` must be set before the build, because Next.js inlines it at build time.
+2. Set the six required environment variables above in the service's **Variables** tab (plus `DISCORD_WEBHOOK_URL` if you want notifications; run links use Railway's public domain unless `APP_URL` is set). `NEXT_PUBLIC_SUPABASE_URL` must be set before the build, because Next.js inlines it at build time.
 3. Apply the database migration (step 3 above) to the production Supabase project.
 4. Deploy. On each start the app marks runs orphaned by the previous process as failed ("stopped unexpectedly") once they have had no heartbeat for 35 minutes.
 

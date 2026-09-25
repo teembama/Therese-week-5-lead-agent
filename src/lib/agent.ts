@@ -8,6 +8,7 @@ import {
 import { z } from "zod";
 import { supabase } from "./supabase";
 import { heartbeatRun } from "./stale-runs";
+import { notifyRunCompleted } from "./discord";
 import {
   MAX_LEADS,
   MAX_CANDIDATES,
@@ -1676,6 +1677,10 @@ export async function runAgent(runId: string, store: RunStore = supabaseRunStore
   } finally {
     if (heartbeat) clearInterval(heartbeat);
   }
+
+  // Optional Discord notice; not awaited, and it never throws. It reads the final status itself,
+  // since the agent (update_run) or this function may have been the one to complete the run.
+  void notifyRunCompleted(runId);
 
   return results;
 }

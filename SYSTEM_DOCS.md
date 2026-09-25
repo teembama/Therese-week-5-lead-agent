@@ -192,6 +192,8 @@ All signed-in users see all runs (a shared team workspace).
 | `APIFY_API_TOKEN` | `discover_companies` |
 | `FIRECRAWL_API_KEY` | `scrape_company` |
 | `SESSION_SECRET` | Session signing; at least 32 characters |
+| `DISCORD_WEBHOOK_URL` | *Optional.* Discord webhook for notifications (run completed, lead promoted). Unset: no notifications |
+| `APP_URL` | *Optional.* Public address used for run links in notifications (e.g. `https://leads.example.com`). Unset: Railway's `RAILWAY_PUBLIC_DOMAIN` |
 
 `NODE_ENV`, `NEXT_RUNTIME`, `NEXT_PHASE` and `PORT` are set by Next.js / Railway.
 
