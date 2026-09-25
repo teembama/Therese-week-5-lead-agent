@@ -4,11 +4,12 @@ import type { ButtonHTMLAttributes, ReactNode } from "react";
 
 // Small shared UI pieces so every page uses the same tokens (see src/app/globals.css).
 
-type ButtonVariant = "primary" | "secondary" | "ghost" | "danger" | "success";
+type ButtonVariant = "primary" | "accent" | "secondary" | "ghost" | "danger" | "success";
 
 const BUTTON_STYLES: Record<ButtonVariant, string> = {
-  primary: "bg-rose-deep text-white hover:bg-rose-deeper border border-rose-deep",
-  secondary: "bg-surface text-ink border border-line-strong hover:border-ink/40",
+  accent: "bg-rose-soft text-rose-deep border border-rose/50 hover:border-rose hover:bg-rose/25",
+  primary: "bg-rose-button text-white hover:bg-rose-button-hover border border-rose-button",
+  secondary: "bg-surface text-ink border border-line-strong hover:border-ink/40 hover:bg-line/40",
   ghost: "bg-transparent text-muted hover:text-ink border border-transparent",
   danger: "bg-surface text-danger border border-danger/40 hover:bg-danger-soft",
   success: "bg-surface text-success border border-success/40 hover:bg-success-soft",
@@ -123,7 +124,7 @@ export function Modal({
 }) {
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/30 px-4 backdrop-blur-[2px]"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 px-4 backdrop-blur-[2px]"
       onClick={busy ? undefined : onClose}
       onKeyDown={(e) => {
         if (e.key === "Escape" && !busy) onClose();
@@ -133,7 +134,7 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className="w-full max-w-lg rounded-2xl border border-line bg-surface p-6 shadow-[0_20px_60px_-20px_rgb(26_26_26/0.25)]"
+        className="w-full max-w-lg rounded-2xl border border-line-strong bg-surface p-6 shadow-[0_24px_70px_-20px_rgb(0_0_0/0.7)]"
         onClick={(e) => e.stopPropagation()}
       >
         <h2 className="text-lg font-semibold tracking-tight">{title}</h2>

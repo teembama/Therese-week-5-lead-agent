@@ -34,10 +34,28 @@ export function AppHeader() {
   return (
     <header className="border-b border-line bg-canvas/90 backdrop-blur">
       <div className="mx-auto flex h-16 max-w-5xl items-center justify-between px-6">
-        <Link href="/" className="flex items-baseline gap-2">
-          <span className="text-[15px] font-semibold tracking-tight text-ink">Koya Lead Studio</span>
-          <span className="hidden h-1.5 w-1.5 translate-y-[-2px] rounded-full bg-rose sm:inline-block" aria-hidden="true" />
-        </Link>
+        <div className="flex items-center gap-8">
+          <Link href="/" className="flex items-baseline gap-2">
+            <span className="text-[15px] font-semibold tracking-tight text-ink">Koya Lead Studio</span>
+            <span className="hidden h-1.5 w-1.5 translate-y-[-2px] rounded-full bg-rose sm:inline-block" aria-hidden="true" />
+          </Link>
+          {!onLogin && (
+            <nav aria-label="Main">
+              <Link
+                href="/"
+                aria-current={pathname === "/" ? "page" : undefined}
+                className={`relative text-sm font-medium transition-colors ${
+                  pathname === "/" ? "text-ink" : "text-muted hover:text-ink"
+                }`}
+              >
+                Dashboard
+                {pathname === "/" && (
+                  <span className="absolute -bottom-[22px] left-0 right-0 h-0.5 rounded-full bg-rose" aria-hidden="true" />
+                )}
+              </Link>
+            </nav>
+          )}
+        </div>
         {!onLogin && user && (
           <div className="flex items-center gap-4 text-sm">
             <span className="hidden text-muted sm:inline">

@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { Alert, Badge, Button, Card, ExternalLink, Label, Modal } from "@/components/ui";
+import { buildSamplePack, formatRange, icpRows, samplePackFilename } from "@/lib/sample-pack";
 
 interface LeadSource {
   id: string;
@@ -174,9 +175,9 @@ function ProgressTracker({
                     done
                       ? "bg-rose text-white"
                       : failed
-                        ? "bg-danger text-white"
+                        ? "bg-danger text-canvas"
                         : stoppedHere
-                          ? "bg-neutral text-white"
+                          ? "bg-neutral text-canvas"
                           : active
                             ? "border border-rose bg-surface text-rose-deep koya-pulse"
                             : "border border-line-strong bg-surface text-muted"
@@ -189,7 +190,7 @@ function ProgressTracker({
                   ) : failed ? (
                     "✕"
                   ) : stoppedHere ? (
-                    <span className="h-2 w-2 rounded-[2px] bg-white" aria-hidden="true" />
+                    <span className="h-2 w-2 rounded-[2px] bg-canvas" aria-hidden="true" />
                   ) : (
                     i + 1
                   )}
@@ -233,42 +234,7 @@ const TOOL_LABELS: Record<string, string> = {
 const APP_LOGGED_TOOLS = new Set(["update_run", "discover_companies", "scrape_company", "save_lead"]);
 
 // --- Research Criteria ---
-// The agent's ICP keys vary between runs, so several aliases map to one label.
-const ICP_FIELDS: { label: string; keys: string[] }[] = [
-  { label: "Company type", keys: ["company_type", "target_company_type"] },
-  { label: "Industries", keys: ["industries", "industry"] },
-  { label: "Geography", keys: ["geography", "location", "locations"] },
-  { label: "Company size", keys: ["company_size", "headcount_range", "employee_range", "size"] },
-  { label: "Buyer persona", keys: ["buyer_persona", "persona"] },
-  { label: "Business problem", keys: ["business_problem", "problem"] },
-  { label: "Hard filters", keys: ["hard_filters"] },
-  { label: "Soft preferences", keys: ["soft_preferences"] },
-  { label: "Disqualifiers", keys: ["disqualifiers"] },
-];
-
-function formatIcpValue(value: unknown): string {
-  if (value == null) return "";
-  if (Array.isArray(value)) return value.map(formatIcpValue).filter(Boolean).join(", ");
-  if (typeof value === "object") {
-    return Object.entries(value as Record<string, unknown>)
-      .map(([k, v]) => `${humanizeKey(k)}: ${formatIcpValue(v)}`)
-      .join("; ");
-  }
-  return String(value);
-}
-
-function humanizeKey(key: string): string {
-  const s = key.replace(/_/g, " ");
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
-function formatRange(range?: { min?: number; max?: number }): string {
-  if (!range) return "";
-  if (range.min !== undefined && range.max !== undefined) return `${range.min}–${range.max} employees`;
-  if (range.min !== undefined) return `${range.min}+ employees`;
-  if (range.max !== undefined) return `up to ${range.max} employees`;
-  return "";
-}
+// ICP labels and formatting are shared with the sample-pack export (src/lib/sample-pack.ts)
 
 function SearchPlanView({ plan }: { plan: SearchPlan }) {
   const f = plan.filters ?? {};
@@ -311,19 +277,7 @@ function SearchPlanView({ plan }: { plan: SearchPlan }) {
 
 function IcpDisplay({ objective, icp }: { objective: string; icp: Record<string, unknown> & { search_plan?: SearchPlan } }) {
   const [open, setOpen] = useState(false);
-
-  const knownKeys = new Set([...ICP_FIELDS.flatMap((f) => f.keys), "search_plan"]);
-  const rows: { label: string; value: string }[] = [];
-  for (const field of ICP_FIELDS) {
-    const key = field.keys.find((k) => icp[k] != null);
-    const value = key ? formatIcpValue(icp[key]) : "";
-    if (value) rows.push({ label: field.label, value });
-  }
-  for (const [key, raw] of Object.entries(icp)) {
-    if (knownKeys.has(key)) continue;
-    const value = formatIcpValue(raw);
-    if (value) rows.push({ label: humanizeKey(key), value });
-  }
+  const rows = icpRows(icp);
 
   return (
     <Card className="mt-10">
@@ -865,6 +819,20 @@ export default function RunPage() {
   const showNeedsReview = qualified.length < (run.lead_limit || 10);
   const visibleLeads = showNeedsReview ? [...qualified, ...needsReview] : qualified;
 
+  // Sample pack: only for a completed run with at least one qualified lead
+  const canExport = run.status === "completed" && qualified.length > 0;
+  const handleExport = () => {
+    const markdown = buildSamplePack(run, leads);
+    const url = URL.createObjectURL(new Blob([markdown], { type: "text/markdown;charset=utf-8" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = samplePackFilename(run.id);
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
   // The run's message: an error for failures, a neutral note otherwise (e.g. a shortfall)
   const messageTone = run.status === "failed" ? "danger" : run.status === "cancelled" ? "neutral" : "warning";
 
@@ -883,6 +851,16 @@ export default function RunPage() {
         <div className="flex flex-wrap items-center gap-3">
           <Label>Run</Label>
           <Badge status={run.status} />
+          {canExport && (
+            <Button size="sm" variant="accent" onClick={handleExport} aria-label="Export sample pack as a Markdown file">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+              Export sample pack
+            </Button>
+          )}
           {run.status === "running" && canCancel && (
             <Button
               size="sm"

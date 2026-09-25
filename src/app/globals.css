@@ -1,41 +1,44 @@
 @import "tailwindcss";
 
 /*
- * Koya Lead Studio design tokens (light theme only).
+ * Koya Lead Studio design tokens (dark theme only).
  * Tailwind v4 turns each --color-* into utilities: bg-canvas, text-ink, border-line, bg-rose-soft…
  *
- * Contrast (WCAG AA, small text needs 4.5:1):
- *  - rose #C0647B is 3.9:1 on white → accents only (tracker, focus rings, rules), never body text
- *  - rose-deep #A34E65 is 5.5:1 on white → buttons, links, emphasised text
- *  - muted #6B6660 is ~5.4:1 on canvas → secondary text
+ * Contrast against the #160F0D background (WCAG AA, small text needs 4.5:1):
+ *  - ink #F4EDE9 ≈ 16:1, muted #B7AAA3 ≈ 7.9:1 (≈ 6.8:1 on surface cards)
+ *  - rose-deep #E7A6B6 ≈ 7:1 → links and rose text
+ *  - rose #C0647B ≈ 4.7:1 on canvas, ≈ 4.1:1 on cards → accents only (tracker, rings, rules)
+ *  - rose-button #A84F67 with white text ≈ 5.3:1 → primary buttons
  */
 @theme {
-  --color-canvas: #fafaf9;
-  --color-surface: #ffffff;
-  --color-ink: #1a1a1a;
-  --color-muted: #6b6660;
-  --color-line: #e8e4df;
-  --color-line-strong: #d6d0c9;
+  --color-canvas: #160f0d;
+  --color-surface: #221916;
+  --color-ink: #f4ede9;
+  --color-muted: #b7aaa3;
+  --color-line: #3a2d29;
+  --color-line-strong: #54433e;
 
   --color-rose: #c0647b;
-  --color-rose-deep: #a34e65;
-  --color-rose-deeper: #8a4055;
-  --color-rose-soft: #f7ebee;
+  --color-rose-deep: #e7a6b6;
+  --color-rose-deeper: #f3c4cf;
+  --color-rose-soft: #3b1f27;
+  --color-rose-button: #a84f67;
+  --color-rose-button-hover: #b85a73;
 
-  --color-success: #3f6b4a;
-  --color-success-soft: #e9f1eb;
-  --color-danger: #9e3f3f;
-  --color-danger-soft: #f7e9e9;
-  --color-warning: #8a5a17;
-  --color-warning-soft: #faf1e2;
-  --color-neutral: #5d6670;
-  --color-neutral-soft: #edf0f2;
+  --color-success: #93cda2;
+  --color-success-soft: #1b2a1f;
+  --color-danger: #efa0a0;
+  --color-danger-soft: #3a1c1d;
+  --color-warning: #e8ba72;
+  --color-warning-soft: #36270f;
+  --color-neutral: #b4bcc5;
+  --color-neutral-soft: #272c31;
 
   --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
 html {
-  color-scheme: light;
+  color-scheme: dark;
 }
 
 body {
@@ -52,10 +55,15 @@ body {
   outline-offset: 2px;
 }
 
+::selection {
+  background: rgb(192 100 123 / 0.45);
+  color: var(--color-ink);
+}
+
 @keyframes koya-pulse {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgb(192 100 123 / 0.35);
+    box-shadow: 0 0 0 0 rgb(192 100 123 / 0.45);
   }
   50% {
     box-shadow: 0 0 0 6px rgb(192 100 123 / 0);
