@@ -1,10 +1,11 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { getSession, requireRole } from "@/lib/auth";
+import { notifyOutreachApproved } from "@/lib/discord";
 
 // PATCH /api/outreach/[id] — human reviewer approves an outreach draft
 export async function PATCH(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const user = await getSession();
@@ -78,6 +79,16 @@ export async function PATCH(
   if (logError) {
     console.error("Failed to log outreach approval:", logError.message);
   }
+
+  // Optional Discord notice, sent after the response so it never delays or blocks the approval
+  after(() =>
+    notifyOutreachApproved({
+      runId: lead.run_id,
+      companyName: lead.company_name,
+      approvedBy: user.username,
+      requestOrigin: req.nextUrl.origin,
+    })
+  );
 
   return NextResponse.json({ outreach: updated });
 }

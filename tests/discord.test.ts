@@ -116,3 +116,21 @@ test("truncate keeps short text and cuts long text to the limit", () => {
   assert.equal(truncate("short", 200), "short");
   assert.equal(truncate("abcdef", 4), "abc…");
 });
+
+test("the outreach-approved embed is green with company, approver and run link, sent after the approval", async () => {
+  const { outreachApprovedEmbed } = await import("../src/lib/discord");
+  const embed = outreachApprovedEmbed({ runId: RUN_ID, companyName: "Desk365", approvedBy: "reviewer1", url: `https://app.example.com/runs/${RUN_ID}` });
+  assert.equal(embed.title, "Outreach approved");
+  assert.equal(embed.color, 0x3fa66a);
+  assert.deepEqual(embed.fields.map((f) => [f.name, f.value]), [
+    ["Company", "Desk365"],
+    ["Approved by", "reviewer1"],
+    ["Run", `[Open run](https://app.example.com/runs/${RUN_ID})`],
+  ]);
+
+  const { readFileSync } = await import("node:fs");
+  const route = readFileSync("src/app/api/outreach/[id]/route.ts", "utf8");
+  const approved = route.indexOf('.update({ status: "approved" })');
+  const notice = route.indexOf("after(() =>\n    notifyOutreachApproved(");
+  assert.ok(approved > 0 && notice > approved, "the notice is scheduled after the approval is saved, via after()");
+});

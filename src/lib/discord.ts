@@ -169,6 +169,21 @@ export async function notifyLeadPromoted(data: {
   await sendDiscordEmbed(leadPromotedEmbed({ ...data, url: runUrl(data.runId, data.requestOrigin) }));
 }
 
+export function outreachApprovedEmbed(data: { runId: string; companyName: string; approvedBy: string; url: string | null }): DiscordEmbed {
+  return {
+    title: "Outreach approved",
+    ...(data.url ? { url: data.url } : {}),
+    color: COLOR_GREEN,
+    fields: [field("Company", data.companyName, true), field("Approved by", data.approvedBy, true), linkField(data.runId, data.url)],
+    timestamp: new Date().toISOString(),
+  };
+}
+
+export async function notifyOutreachApproved(data: { runId: string; companyName: string; approvedBy: string; requestOrigin?: string }): Promise<void> {
+  if (!webhookUrl()) return;
+  await sendDiscordEmbed(outreachApprovedEmbed({ ...data, url: runUrl(data.runId, data.requestOrigin) }));
+}
+
 export function outreachRejectedEmbed(data: { runId: string; companyName: string; rejectedBy: string; reason: string; url: string | null }): DiscordEmbed {
   return {
     title: "Outreach rejected",
